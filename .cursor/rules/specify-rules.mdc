@@ -1,0 +1,38 @@
+---
+description: Project Development Guidelines
+globs: ["**/*"]
+alwaysApply: true
+---
+
+# graphio-performance-tester Development Guidelines
+
+Auto-generated from all feature plans. Last updated: 2026-03-16
+
+## Active Technologies
+- Python 3.14+ (backend), JavaScript/TypeScript (frontend, Vue 3) + FastAPI (backend), Vue.js (frontend), k6(부하 실행), Grafana(대시보드), InfluxDB(메트릭), Docker Compose (001-ui-perf-test-env)
+- 테스트 정의·실행 이력·결과 요약 — SQLite 또는 PostgreSQL(FastAPI 쪽); 메트릭 — InfluxDB (001-ui-perf-test-env)
+
+- Backend/Frontend 선택은 research.md 및 팀 정책에 따름(권장: Node.js 또는 Python API + SPA) + k6(부하 실행), Grafana(대시보드), 메트릭 저장소(InfluxDB 등), Docker Compose (001-ui-perf-test-env)
+
+## Project Structure
+
+```text
+src/
+tests/
+```
+
+## Commands
+
+cd src [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] pytest [ONLY COMMANDS FOR ACTIVE TECHNOLOGIES][ONLY COMMANDS FOR ACTIVE TECHNOLOGIES] ruff check .
+
+## Code Style
+
+Backend/Frontend 선택은 research.md 및 팀 정책에 따름(권장: Node.js 또는 Python API + SPA): Follow standard conventions
+
+## Recent Changes
+- 001-ui-perf-test-env: Added Python 3.14+ (backend), JavaScript/TypeScript (frontend, Vue 3) + FastAPI (backend), Vue.js (frontend), k6(부하 실행), Grafana(대시보드), InfluxDB(메트릭), Docker Compose
+
+- 001-ui-perf-test-env: Added Backend/Frontend 선택은 research.md 및 팀 정책에 따름(권장: Node.js 또는 Python API + SPA) + k6(부하 실행), Grafana(대시보드), 메트릭 저장소(InfluxDB 등), Docker Compose
+
+<!-- MANUAL ADDITIONS START -->
+<!-- MANUAL ADDITIONS END -->
