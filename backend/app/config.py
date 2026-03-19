@@ -2,6 +2,7 @@
 
 import os
 from pathlib import Path
+from urllib.parse import urlparse
 
 from dotenv import load_dotenv
 
@@ -20,4 +21,19 @@ DATABASE_URL: str = _str_or_default(
     "sqlite:///./app.db",
 )
 GRAFANA_DASHBOARD_URL: str = _str_or_default("GRAFANA_DASHBOARD_URL", "")
+_GRAFANA_BROWSER_VITALS: str = _str_or_default("GRAFANA_BROWSER_VITALS_URL", "")
+
+
+def _browser_vitals_url() -> str:
+    if _GRAFANA_BROWSER_VITALS.strip():
+        return _GRAFANA_BROWSER_VITALS.strip()
+    base = GRAFANA_DASHBOARD_URL.strip().rstrip("/")
+    if not base:
+        return ""
+    parsed = urlparse(base)
+    path = "/d/browser-web-vitals/browser-web-vitals"
+    return f"{parsed.scheme}://{parsed.netloc}{path}"
+
+
+GRAFANA_BROWSER_VITALS_URL: str = _browser_vitals_url()
 INFLUXDB_URL: str = _str_or_default("INFLUXDB_URL", "http://influxdb:8086")

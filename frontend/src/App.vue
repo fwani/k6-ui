@@ -5,7 +5,6 @@
       <v-spacer />
       <v-btn to="/" variant="text">홈</v-btn>
       <v-btn to="/tests" variant="text">테스트 목록</v-btn>
-      <v-btn to="/tests/new" variant="text">테스트 생성</v-btn>
       <v-btn to="/runs" variant="text">실행 목록</v-btn>
     </v-app-bar>
     <v-main>
@@ -20,6 +19,25 @@
 </script>
 
 <style>
+/* v-card hover: 연한 노란색 (전체 공통) */
+.v-card {
+  position: relative;
+  overflow: hidden;
+}
+.v-card:hover::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  background-color: #fffde7;
+  opacity: 0.7;
+  pointer-events: none;
+}
+.v-card > * {
+  position: relative;
+  z-index: 1;
+}
+
 /* 툴팁 가독성: 밝은 배경 + 진한 글씨 */
 .v-tooltip .v-overlay__content {
   background: #fff !important;

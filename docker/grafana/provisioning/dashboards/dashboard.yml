@@ -1,0 +1,12 @@
+# k6 대시보드 자동 로드 (InfluxDB 1.x 메트릭)
+apiVersion: 1
+
+providers:
+  - name: "k6"
+    orgId: 1
+    folder: ""
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards/json

@@ -12,6 +12,7 @@ class TestCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str = Field(..., min_length=1)
+    engine: str = Field("http", alias="engine")  # http=k6, browser=Playwright
     target_url: str = Field(..., alias="targetUrl")  # base URL (no query)
     query_params: str | None = Field(None, alias="queryParams")  # JSON array [{"key":"k","value":"v"},...]
     http_method: str = Field(..., alias="httpMethod")
@@ -22,6 +23,10 @@ class TestCreate(BaseModel):
     request_delay: float | None = Field(None, ge=0, alias="requestDelay")
     ramp_up: int = Field(0, ge=0, alias="rampUp")
     iterations: int | None = Field(None, gt=0, alias="iterations")
+    body_preview_size: int = Field(500, ge=0, le=10000, alias="bodyPreviewSize")
+    vu_url_suffix: bool = Field(False, alias="vuUrlSuffix")
+    error_page_pattern: str | None = Field(None, alias="errorPagePattern")
+    error_page_match_mode: str = Field("contains", alias="errorPageMatchMode")  # contains=포함 시 실패, not_contains=미포함 시 실패
 
     @field_validator("target_url")
     @classmethod
@@ -40,6 +45,7 @@ class TestUpdate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     name: str | None = Field(None, min_length=1)
+    engine: str | None = Field(None, alias="engine")
     target_url: str | None = Field(None, alias="targetUrl")
     query_params: str | None = Field(None, alias="queryParams")
     http_method: str | None = Field(None, alias="httpMethod")
@@ -50,6 +56,10 @@ class TestUpdate(BaseModel):
     request_delay: float | None = Field(None, ge=0, alias="requestDelay")
     ramp_up: int | None = Field(None, ge=0, alias="rampUp")
     iterations: int | None = Field(None, gt=0, alias="iterations")
+    body_preview_size: int | None = Field(None, ge=0, le=10000, alias="bodyPreviewSize")
+    vu_url_suffix: bool | None = Field(None, alias="vuUrlSuffix")
+    error_page_pattern: str | None = Field(None, alias="errorPagePattern")
+    error_page_match_mode: str | None = Field(None, alias="errorPageMatchMode")
 
 
 class TestResponse(BaseModel):
@@ -59,6 +69,7 @@ class TestResponse(BaseModel):
 
     id: str
     name: str
+    engine: str = Field("http", alias="engine")
     target_url: str = Field(alias="targetUrl")
     query_params: str | None = Field(None, alias="queryParams")
     http_method: str = Field(alias="httpMethod")
@@ -69,5 +80,9 @@ class TestResponse(BaseModel):
     request_delay: float | None = Field(None, alias="requestDelay")
     ramp_up: int = Field(alias="rampUp")
     iterations: int | None = Field(None, alias="iterations")
+    body_preview_size: int = Field(500, alias="bodyPreviewSize")
+    vu_url_suffix: bool = Field(False, alias="vuUrlSuffix")
+    error_page_pattern: str | None = Field(None, alias="errorPagePattern")
+    error_page_match_mode: str = Field("contains", alias="errorPageMatchMode")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")

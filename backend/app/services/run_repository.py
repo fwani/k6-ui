@@ -1,7 +1,7 @@
 """Test Run CRUD. 생성 시 Ready, 시작 시 Running."""
 
-from datetime import datetime
 import uuid
+from datetime import datetime
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, joinedload
@@ -9,10 +9,11 @@ from sqlalchemy.orm import Session, joinedload
 from app.models.db import TestRun
 
 
-def create(db: Session, *, test_id: str) -> TestRun:
+def create(db: Session, *, test_id: str, engine: str = "http") -> TestRun:
     r = TestRun(
         id=str(uuid.uuid4()),
         test_id=test_id,
+        engine=engine,
         status="Ready",
     )
     db.add(r)
@@ -23,6 +24,12 @@ def create(db: Session, *, test_id: str) -> TestRun:
 
 def get(db: Session, id: str) -> TestRun | None:
     return db.get(TestRun, id)
+
+
+def get_with_test(db: Session, id: str) -> TestRun | None:
+    """Run 단건 조회 (test 관계 로드)."""
+    stmt = select(TestRun).where(TestRun.id == id).options(joinedload(TestRun.test))
+    return db.execute(stmt).scalars().unique().one_or_none()
 
 
 def get_running(db: Session) -> TestRun | None:
@@ -69,3 +76,9 @@ def list_with_summary(
         stmt = stmt.where(TestRun.test_id == test_id)
     stmt = stmt.offset((page - 1) * limit).limit(limit)
     return list(db.execute(stmt).scalars().unique().all())
+
+
+def delete(db: Session, r: TestRun) -> None:
+    """Run 삭제. result, request_responses는 FK CASCADE로 연쇄 삭제."""
+    db.delete(r)
+    db.commit()

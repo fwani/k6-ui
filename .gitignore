@@ -29,8 +29,13 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Backend runtime data (screenshots etc.)
+backend/data/
+
 # Test / coverage
 .coverage
 htmlcov/
 .pytest_cache/
 coverage/
+.git-credentials-*
+*.db

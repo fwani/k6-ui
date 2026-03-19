@@ -31,9 +31,16 @@ def create_test(body: TestCreate, db: Session = Depends(get_db)):
         headers=body.headers,
         vus=body.vus,
         duration=body.duration,
+        engine=getattr(body, "engine", None) or "http",
         request_delay=body.request_delay,
         ramp_up=body.ramp_up,
         iterations=body.iterations,
+        body_preview_size=body.body_preview_size,
+        vu_url_suffix=body.vu_url_suffix,
+        error_page_pattern=body.error_page_pattern,
+        error_page_match_mode=(
+            "not_contains" if (getattr(body, "error_page_match_mode", None) or "").strip() == "not_contains" else "contains"
+        ),
     )
     logger.info("test_created test_id=%s name=%s", t.id, t.name)
     return _to_response(t)
@@ -72,9 +79,14 @@ def update_test(id: str, body: TestUpdate, db: Session = Depends(get_db)):
         headers=body.headers,
         vus=body.vus,
         duration=body.duration,
+        engine=body.engine,
         request_delay=body.request_delay,
         ramp_up=body.ramp_up,
         iterations=body.iterations,
+        body_preview_size=body.body_preview_size,
+        vu_url_suffix=body.vu_url_suffix,
+        error_page_pattern=body.error_page_pattern,
+        error_page_match_mode=body.error_page_match_mode,
     )
     return _to_response(t)
 

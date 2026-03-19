@@ -16,16 +16,23 @@ def create(
     http_method: str,
     vus: int,
     duration: int,
+    engine: str = "http",
     request_body: str | None = None,
     headers: str | None = None,
     query_params: str | None = None,
     request_delay: float | None = None,
     ramp_up: int = 0,
     iterations: int | None = None,
+    body_preview_size: int = 500,
+    vu_url_suffix: bool = False,
+    error_page_pattern: str | None = None,
+    error_page_match_mode: str = "contains",
 ) -> PerformanceTest:
+    engine_val = "browser" if (engine or "").strip().lower() == "browser" else "http"
     t = PerformanceTest(
         id=str(uuid.uuid4()),
         name=name,
+        engine=engine_val,
         target_url=target_url,
         query_params=query_params,
         http_method=http_method,
@@ -36,6 +43,10 @@ def create(
         request_delay=request_delay,
         ramp_up=ramp_up,
         iterations=iterations,
+        body_preview_size=body_preview_size,
+        vu_url_suffix=vu_url_suffix,
+        error_page_pattern=error_page_pattern,
+        error_page_match_mode=(error_page_match_mode if error_page_match_mode in ("contains", "not_contains") else "contains"),
     )
     db.add(t)
     db.commit()
@@ -64,14 +75,21 @@ def update(
     headers: str | None = None,
     vus: int | None = None,
     duration: int | None = None,
+    engine: str | None = None,
     request_delay: float | None = None,
     ramp_up: int | None = None,
     iterations: int | None = None,
+    body_preview_size: int | None = None,
+    vu_url_suffix: bool | None = None,
+    error_page_pattern: str | None = None,
+    error_page_match_mode: str | None = None,
 ) -> PerformanceTest:
     if name is not None:
         t.name = name
     if target_url is not None:
         t.target_url = target_url
+    if engine is not None:
+        t.engine = "browser" if (engine or "").strip().lower() == "browser" else "http"
     if query_params is not None:
         t.query_params = query_params
     if http_method is not None:
@@ -88,8 +106,16 @@ def update(
         t.request_delay = request_delay
     if ramp_up is not None:
         t.ramp_up = ramp_up
-    if iterations is not None:
-        t.iterations = iterations
+    # None 허용: 반복 횟수 비움(제한 시간만 사용)으로 업데이트 가능하도록
+    t.iterations = iterations
+    if body_preview_size is not None:
+        t.body_preview_size = body_preview_size
+    if vu_url_suffix is not None:
+        t.vu_url_suffix = vu_url_suffix
+    if error_page_pattern is not None:
+        t.error_page_pattern = error_page_pattern
+    if error_page_match_mode is not None:
+        t.error_page_match_mode = error_page_match_mode if error_page_match_mode in ("contains", "not_contains") else "contains"
     db.commit()
     db.refresh(t)
     return t

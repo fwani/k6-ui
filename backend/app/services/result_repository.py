@@ -19,6 +19,10 @@ def create(
     tps_or_rps: float,
     execution_time: float,
     error_message: str | None = None,
+    lcp_ms: float | None = None,
+    fcp_ms: float | None = None,
+    cls: float | None = None,
+    ttfb_ms: float | None = None,
 ) -> TestResult:
     r = TestResult(
         id=str(uuid.uuid4()),
@@ -30,6 +34,10 @@ def create(
         tps_or_rps=tps_or_rps,
         execution_time=execution_time,
         error_message=error_message,
+        lcp_ms=lcp_ms,
+        fcp_ms=fcp_ms,
+        cls=cls,
+        ttfb_ms=ttfb_ms,
     )
     db.add(r)
     db.commit()

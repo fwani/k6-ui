@@ -7,7 +7,7 @@ services:
       - "8080:8080"
     environment:
       DATABASE_URL: "sqlite:////app/data/app.db"
-      GRAFANA_DASHBOARD_URL: "http://localhost:3001"
+      GRAFANA_DASHBOARD_URL: "http://grafana:3001/d/k6-load-testing/k6-load-testing-results"
       INFLUXDB_URL: "http://influxdb:8086"
     volumes:
       - api_data:/app/data
@@ -32,7 +32,7 @@ services:
       INFLUXDB_DB: k6
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:10.2.2
     ports:
       - "3001:3000"
     environment:

@@ -1,4 +1,4 @@
-"""DB 엔진 및 세션. FastAPI Depends(get_db)용. 스키마는 Alembic으로 적용."""
+"""DB 엔진 및 세션. FastAPI Depends(get_db)용. 기동 시 init_db로 누락 테이블 생성."""
 
 from collections.abc import Generator
 

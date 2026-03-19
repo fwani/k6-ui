@@ -1,8 +1,16 @@
-"""Pydantic 스키마: Run 응답. API는 camelCase."""
+"""Pydantic 스키마: Run 요청/응답. API는 camelCase."""
 
 from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class StartRunRequest(BaseModel):
+    """POST /tests/:testId/runs 요청 body. engine 생략 시 http."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    engine: str = Field("http", alias="engine")  # http | browser
 
 
 class ResultSummaryResponse(BaseModel):
@@ -22,6 +30,7 @@ class RunSummaryResponse(BaseModel):
     id: str
     test_id: str = Field(alias="testId")
     test_name: str = Field(alias="testName")
+    engine: str = Field("http", alias="engine")
     status: str
     started_at: datetime | None = Field(None, alias="startedAt")
     finished_at: datetime | None = Field(None, alias="finishedAt")
@@ -36,6 +45,8 @@ class RunResponse(BaseModel):
 
     id: str
     test_id: str = Field(alias="testId")
+    test_name: str | None = Field(None, alias="testName")
+    engine: str = Field("http", alias="engine")
     status: str  # Ready | Running | Finished | Failed
     started_at: datetime | None = Field(None, alias="startedAt")
     finished_at: datetime | None = Field(None, alias="finishedAt")

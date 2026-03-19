@@ -7,7 +7,7 @@ export const options = {
 };
 
 export default function () {
-  http.get("http://192.168.109.254:31320/graphio/v1/raw-data");
+  http.get("http://192.168.109.254:31320/gaphio/v1/raw-data");
   sleep(1);
 }
 

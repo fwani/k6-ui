@@ -13,6 +13,9 @@ COPY --from=grafana/k6:latest /usr/bin/k6 /usr/local/bin/k6
 COPY pyproject.toml ./
 RUN uv sync --no-dev --no-install-project
 
+# Playwright Chromium (for browser/rendering runs)
+RUN uv run playwright install chromium
+
 # Application + Alembic
 COPY app ./app
 COPY alembic ./alembic

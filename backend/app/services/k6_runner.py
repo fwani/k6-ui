@@ -2,12 +2,25 @@
 
 import json
 import logging
+import re
 import subprocess
 import threading
-from urllib.parse import quote
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+from urllib.parse import quote, urlparse, urlunparse
+
+from jinja2 import Environment, FileSystemLoader
 
 logger = logging.getLogger(__name__)
 
+_TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
+_JINJA_ENV = Environment(loader=FileSystemLoader(_TEMPLATES_DIR), autoescape=False)
+_K6_SCRIPT_TEMPLATE = _JINJA_ENV.get_template("k6_script.tpl")
+
+VU_PLACEHOLDER = "{{VU}}"
+
+from app.config import INFLUXDB_URL
 from app.models.db import PerformanceTest
 
 
@@ -16,6 +29,10 @@ class K6NotFoundError(Exception):
 
 _processes: dict[str, subprocess.Popen] = {}
 _processes_lock = threading.Lock()
+
+_log_buffers: dict[str, list[str]] = {}
+_log_lock = threading.Lock()
+_MAX_LOG_LINES = 5000
 
 
 def _parse_headers(headers: str | None) -> dict[str, str]:
@@ -26,6 +43,21 @@ def _parse_headers(headers: str | None) -> dict[str, str]:
         return {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _contains_vu_placeholder(s: str) -> bool:
+    """문자열에 {{VU}} 플레이스홀더가 포함되어 있는지."""
+    return s is not None and VU_PLACEHOLDER in str(s)
+
+
+def _url_with_vu_suffix(base: str) -> str:
+    """base URL의 path 끝에 {{VU}}를 붙인 URL 반환. 쿼리/프래그먼트는 유지."""
+    base = (base or "").strip()
+    if not base:
+        return base
+    parsed = urlparse(base)
+    path = parsed.path + VU_PLACEHOLDER
+    return urlunparse((parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment))
 
 
 def _build_url_with_params(base: str, query_params: str | None) -> str:
@@ -58,17 +90,77 @@ def _build_url_with_params(base: str, query_params: str | None) -> str:
         return base
 
 
+def _replace_vu_placeholder(s: str, vu: str = "1") -> str:
+    """문자열 내 {{VU}}를 주어진 값으로 치환. per-VU 결과 저장 시 대표값용."""
+    if s is None:
+        return ""
+    return str(s).replace(VU_PLACEHOLDER, vu)
+
+
+def get_request_args_json(test: PerformanceTest) -> str | None:
+    """테스트에서 요청 인자(url, method, headers, body)를 JSON 문자열로 반환. 결과 저장용. per-VU일 때는 {{VU}}→1 대표값."""
+    try:
+        method = (getattr(test, "http_method", None) or "GET").upper()
+        base_url = (getattr(test, "target_url", None) or "").strip() or "https://httpbin.org/get"
+        query_params = getattr(test, "query_params", None)
+        vu_url_suffix = bool(getattr(test, "vu_url_suffix", False))
+        if vu_url_suffix and VU_PLACEHOLDER not in base_url:
+            base_url = _url_with_vu_suffix(base_url)
+        url = _build_url_with_params(base_url, query_params)
+        if _needs_per_vu(test):
+            url = _replace_vu_placeholder(url)
+        body = getattr(test, "request_body", None) or ""
+        if body is not None:
+            body = str(body).strip()
+        else:
+            body = ""
+        if _needs_per_vu(test):
+            body = _replace_vu_placeholder(body)
+        headers = _parse_headers(getattr(test, "headers", None))
+        if _needs_per_vu(test):
+            headers = {k: _replace_vu_placeholder(v) for k, v in headers.items()}
+        return json.dumps(
+            {"url": url, "method": method, "headers": headers, "body": body},
+            ensure_ascii=False,
+        )
+    except (TypeError, ValueError):
+        return None
+
+
+def _needs_per_vu(test: PerformanceTest) -> bool:
+    """테스트가 VU별 변형({{VU}} 또는 vu_url_suffix)을 사용하는지."""
+    if getattr(test, "vu_url_suffix", False):
+        return True
+    base_url = (getattr(test, "target_url", None) or "").strip()
+    if _contains_vu_placeholder(base_url):
+        return True
+    query_params = getattr(test, "query_params", None)
+    if query_params:
+        try:
+            arr = json.loads(query_params)
+            if isinstance(arr, list):
+                for item in arr:
+                    if isinstance(item, dict) and _contains_vu_placeholder(item.get("value")):
+                        return True
+        except (json.JSONDecodeError, TypeError):
+            pass
+    headers = _parse_headers(getattr(test, "headers", None))
+    for v in headers.values():
+        if _contains_vu_placeholder(v):
+            return True
+    body = getattr(test, "request_body", None) or ""
+    if _contains_vu_placeholder(body):
+        return True
+    return False
+
+
 def generate_script(test: PerformanceTest) -> str:
     """테스트 파라미터로 k6 JS 스크립트 생성. handleSummary는 stdout으로 JSON 출력."""
     method = (getattr(test, "http_method", None) or "GET").upper()
     base_url = (getattr(test, "target_url", None) or "").strip() or "https://httpbin.org/get"
     query_params = getattr(test, "query_params", None)
-    url = _build_url_with_params(base_url, query_params)
-    body = getattr(test, "request_body", None) or ""
-    if body is not None:
-        body = str(body).strip()
-    else:
-        body = ""
+    body_raw = getattr(test, "request_body", None) or ""
+    body = str(body_raw).strip() if body_raw is not None else ""
     headers = _parse_headers(getattr(test, "headers", None))
     if "Content-Type" not in headers and method in ("POST", "PUT", "PATCH"):
         headers["Content-Type"] = "application/json"
@@ -80,26 +172,58 @@ def generate_script(test: PerformanceTest) -> str:
         iterations = max(1, int(iterations))
     rd = getattr(test, "request_delay", None)
     sleep_s = float(rd) if rd is not None and float(rd) >= 0 else 1
+    body_preview_size = max(0, min(10000, int(getattr(test, "body_preview_size", 500) or 500)))
+    vu_url_suffix = bool(getattr(test, "vu_url_suffix", False))
+    error_page_pattern = (getattr(test, "error_page_pattern", None) or "").strip()
+    error_page_pattern_js = json.dumps(error_page_pattern) if error_page_pattern else None
+    error_page_match_mode = (getattr(test, "error_page_match_mode", None) or "contains").strip() or "contains"
 
-    headers_js = json.dumps(headers) if headers else "{}"
-    body_arg = f", {json.dumps(body)}" if body else ""
-    body_headers = f", {{ headers: {headers_js} }}" if headers else ""
-
-    # k6 http module: get(url), post(url, body, opts), etc.
-    if method == "GET":
-        call = f"http.get({json.dumps(url)}{body_headers})"
-    elif method == "POST":
-        call = f"http.post({json.dumps(url)}{body_arg}{body_headers})"
-    elif method == "PUT":
-        call = f"http.put({json.dumps(url)}{body_arg}{body_headers})"
-    elif method == "DELETE":
-        call = f"http.del({json.dumps(url)}{body_headers})"
+    per_vu = _needs_per_vu(test)
+    if per_vu:
+        # URL 템플릿: vu_url_suffix면 path 끝에 {{VU}} 붙이기, 아니면 base_url 그대로(이미 {{VU}} 있을 수 있음)
+        base_url_template = base_url
+        if vu_url_suffix and VU_PLACEHOLDER not in base_url:
+            base_url_template = _url_with_vu_suffix(base_url)
+        url_template = _build_url_with_params(base_url_template, query_params)
+        url_template_js = json.dumps(url_template)
+        headers_js = json.dumps(headers) if headers else "{}"
+        body_template_js = json.dumps(body)
+        method_js = json.dumps(method)
+        # default function 안에서 __VU로 치환 후 요청
+        placeholder_js = json.dumps(VU_PLACEHOLDER)
+        call_js = f"""  const vu = __VU;
+  const replaceVu = (s) => (s == null ? '' : String(s).split({placeholder_js}).join(vu));
+  const url = replaceVu(URL_TEMPLATE);
+  const headersObj = {{}};
+  for (const [k, v] of Object.entries(HEADERS_TEMPLATE)) {{ headersObj[k] = replaceVu(v); }}
+  const bodyStr = replaceVu(BODY_TEMPLATE);
+  const res = (method === 'GET') ? http.get(url, {{ headers: headersObj }})
+    : (method === 'POST') ? http.post(url, bodyStr, {{ headers: headersObj }})
+    : (method === 'PUT') ? http.put(url, bodyStr, {{ headers: headersObj }})
+    : (method === 'DELETE') ? http.del(url, {{ headers: headersObj }})
+    : http.request(method, url, bodyStr, {{ headers: headersObj }});
+  const requestArgs = {{ url, method, headers: headersObj, body: bodyStr }};"""
     else:
-        call = f"http.request({json.dumps(method)}, {json.dumps(url)}{body_arg}{body_headers})"
+        url = _build_url_with_params(base_url, query_params)
+        headers_js = json.dumps(headers) if headers else "{}"
+        method_js = json.dumps(method)
+        body_js = json.dumps(body) if body else '""'
+        # non-per-VU: 변수로 url/method/headers/body 정의 후 요청·requestArgs 로그
+        call_js = f"""  const url = {json.dumps(url)};
+  const method = {method_js};
+  const headers = {headers_js};
+  const body = {body_js};
+  const res = (method === 'GET') ? http.get(url, {{ headers }})
+    : (method === 'POST') ? http.post(url, body, {{ headers }})
+    : (method === 'PUT') ? http.put(url, body, {{ headers }})
+    : (method === 'DELETE') ? http.del(url, {{ headers }})
+    : http.request(method, url, body, {{ headers }});
+  const requestArgs = {{ url, method, headers, body }};"""
 
-    # JMeter-style: iterations = total iterations (duration 대신); rampUp = duration 모드에서만 stages 사용
+    # 웹: 반복 횟수 = 사용자당 횟수. k6: iterations = 총 횟수이므로 반복횟수 * vus (iterations >= vus 필요)
     if iterations is not None:
-        options_js = f"  vus: {vus},\n  iterations: {iterations},\n"
+        total_iterations = iterations * vus
+        options_js = f"  vus: {vus},\n  iterations: {total_iterations},\n"
     elif ramp_up > 0:
         options_js = f"""  stages: [
     {{ duration: '{ramp_up}s', target: {vus} }},
@@ -109,25 +233,20 @@ def generate_script(test: PerformanceTest) -> str:
     else:
         options_js = f"  vus: {vus},\n  duration: '{duration_s}s',\n"
 
-    # handleSummary: stdout으로 JSON 출력 → 파일 경로 의존 없이 communicate()에서 파싱
-    script = f"""import http from 'k6/http';
-import {{ sleep }} from 'k6';
-
-export const options = {{
-{options_js}}};
-
-export default function () {{
-  {call};
-  sleep({sleep_s});
-}}
-
-const SUMMARY_MARKER = '__K6_SUMMARY_JSON__';
-const SUMMARY_END = '__K6_SUMMARY_END__';
-export function handleSummary(data) {{
-  return {{ stdout: SUMMARY_MARKER + JSON.stringify(data) + SUMMARY_END }};
-}}
-"""
-    return script
+    ctx = {
+        "per_vu": per_vu,
+        "options_js": options_js,
+        "call_js": call_js,
+        "body_preview_size": body_preview_size,
+        "sleep_s": sleep_s,
+        "url_template_js": url_template_js if per_vu else "",
+        "headers_js": headers_js if per_vu else "{}",
+        "body_template_js": body_template_js if per_vu else '""',
+        "method_js": method_js if per_vu else '""',
+        "error_page_pattern_js": error_page_pattern_js,
+        "error_page_match_mode": error_page_match_mode,
+    }
+    return _K6_SCRIPT_TEMPLATE.render(**ctx)
 
 
 def _metric_val(m: dict, key: str, default: float = 0) -> float:
@@ -153,7 +272,8 @@ def _parse_k6_summary(data: dict) -> dict | None:
         avg_ms = _metric_val(hr_duration, "avg")
         max_ms = _metric_val(hr_duration, "max")
         rate = _metric_val(hr_failed, "rate")
-        count = int(_metric_val(hr_reqs, "count"))
+        # k6 counter: 일부 버전은 "count", 일부는 "value" 사용
+        count = int(_metric_val(hr_reqs, "count") or _metric_val(hr_reqs, "value"))
         req_rate = _metric_val(hr_reqs, "rate")
         exec_s = count / req_rate if req_rate > 0 else 0.0
         return {
@@ -170,6 +290,132 @@ def _parse_k6_summary(data: dict) -> dict | None:
 
 _SUMMARY_MARKER = b"__K6_SUMMARY_JSON__"
 _SUMMARY_END = b"__K6_SUMMARY_END__"
+_REQ_PREFIX = "__REQ__"
+_REQ_END = "__REQEND__"
+_MAX_REQUEST_RESPONSES = 10_000
+
+
+def _append_log(run_id: str, line: str, stream: str = "stdout") -> None:
+    """로그 버퍼에 한 줄 추가. stream이 stderr면 [stderr] 접두사."""
+    if not line and stream == "stdout":
+        return
+    text = f"[stderr] {line}" if stream == "stderr" else line
+    with _log_lock:
+        buf = _log_buffers.setdefault(run_id, [])
+        buf.append(text)
+        if len(buf) > _MAX_LOG_LINES:
+            del buf[: len(buf) - _MAX_LOG_LINES]
+
+
+def get_logs(run_id: str) -> list[str]:
+    """run_id에 해당하는 k6 실행 로그 라인 목록 반환 (복사)."""
+    with _log_lock:
+        return list(_log_buffers.get(run_id, []))
+
+
+def _parse_one_req_obj(obj: dict) -> dict | None:
+    """파싱된 JSON 객체 하나를 저장용 dict로 변환. status는 숫자/문자열 모두 허용. requestArgs 있으면 request_args(JSON 문자열)로 저장."""
+    try:
+        status = obj.get("status")
+        duration = obj.get("duration")
+        body = obj.get("body")
+        requested_at = None
+        raw = obj.get("requestedAt") or obj.get("requested_at")
+        if raw and isinstance(raw, str):
+            try:
+                s = raw.strip().replace("Z", "+00:00")
+                # 초 이하 6자리(microsecond); 초과 분은 버림
+                s = re.sub(r"(\.\d+)", lambda m: (m.group(1) + "000000")[:7], s)
+                dt = datetime.fromisoformat(s)
+                if dt.tzinfo is not None:
+                    dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
+                requested_at = dt
+            except (ValueError, TypeError):
+                pass
+        status_code = None
+        if status is not None:
+            try:
+                status_code = int(status) if not isinstance(status, int) else status
+            except (TypeError, ValueError):
+                pass
+        request_args = None
+        ra = obj.get("requestArgs") or obj.get("request_args")
+        if ra is not None and isinstance(ra, dict):
+            request_args = json.dumps(ra, ensure_ascii=False)
+        failed = obj.get("failed")
+        if failed is not None and not isinstance(failed, bool):
+            failed = bool(failed)
+        elif failed is None:
+            failed = False  # 구버전 __REQ__ 로그에는 failed 없음 → 실패 아님으로 저장
+        return {
+            "status_code": status_code if (status_code is None or 0 <= status_code <= 999) else None,
+            "response_time_ms": float(duration) if duration is not None else None,
+            "body_preview": (body if body is not None else None) or None,
+            "requested_at": requested_at,
+            "request_args": request_args,
+            "failed": failed,
+        }
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _extract_req_json(line_str: str) -> str | None:
+    """__REQ__ 와 __REQEND__ 사이 문자열 반환. k6가 두 마커로 감싸서 출력."""
+    a = line_str.find(_REQ_PREFIX)
+    if a < 0:
+        return None
+    start = a + len(_REQ_PREFIX)
+    b = line_str.find(_REQ_END, start)
+    if b < 0:
+        return None
+    return line_str[start:b].strip()
+
+
+def _parse_one_req_line(line_str: str) -> dict | None:
+    """한 줄에서 __REQ__...__REQEND__ 구간 추출 후 JSON 파싱해 row dict 반환."""
+    json_str = _extract_req_json(line_str)
+    if not json_str:
+        return None
+    # k6 stderr가 msg="..." 로 감쌀 때 \" 만 치환 (복잡한 이스케이프 파싱 없음)
+    if "\\\"" in json_str or '\\"' in json_str:
+        json_str = json_str.replace("\\\\", "\\").replace("\\\"", "\"")
+    try:
+        obj = json.loads(json_str)
+        return _parse_one_req_obj(obj)
+    except (json.JSONDecodeError, TypeError, ValueError, KeyError):
+        return None
+
+
+def _parse_request_responses(stdout_bytes: bytes) -> list[dict]:
+    """stdout에서 __REQ__...__REQEND__ 포함 줄 파싱."""
+    out: list[dict] = []
+    req_end_b = _REQ_END.encode("utf-8")
+    for line in stdout_bytes.splitlines():
+        if _REQ_PREFIX.encode("utf-8") not in line or req_end_b not in line:
+            continue
+        line_str = line.decode("utf-8", errors="replace")
+        row = _parse_one_req_line(line_str)
+        if row:
+            out.append(row)
+        if len(out) >= _MAX_REQUEST_RESPONSES:
+            break
+    return out
+
+
+def _parse_request_responses_from_stderr(stderr_bytes: bytes) -> list[dict]:
+    """stderr에서 __REQ__...__REQEND__ 포함 줄 파싱."""
+    out: list[dict] = []
+    req_end_b = _REQ_END.encode("utf-8")
+    for line in stderr_bytes.splitlines():
+        if _REQ_PREFIX.encode("utf-8") not in line or req_end_b not in line:
+            continue
+        line_str = line.decode("utf-8", errors="replace")
+        row = _parse_one_req_line(line_str)
+        if row:
+            out.append(row)
+        if len(out) >= _MAX_REQUEST_RESPONSES:
+            break
+    return out
 
 
 def start(
@@ -177,73 +423,163 @@ def start(
     test: PerformanceTest,
     on_complete: Callable[[str, int, dict | None, str | None], None] | None = None,
 ) -> None:
-    """백그라운드에서 k6 실행. 스크립트는 stdin으로 전달(k6 run -). 요약은 stdout에서 파싱."""
+    """백그라운드에서 k6 실행. 스크립트는 stdin으로 전달(k6 run -). stdout/stderr는 스레드로 읽어 로그 버퍼에 적재, 요약은 누적 stdout에서 파싱."""
     script = generate_script(test)
+    script_bytes = script.encode("utf-8")
 
     with _processes_lock:
         if run_id in _processes:
             return
+        with _log_lock:
+            _log_buffers[run_id] = []
+        k6_cmd = ["k6", "run", "-"]
+        influx_url = (INFLUXDB_URL or "").strip().rstrip("/")
+        if influx_url:
+            k6_cmd = ["k6", "run", "--out", f"influxdb={influx_url}/k6", "-"]
         try:
             proc = subprocess.Popen(
-                ["k6", "run", "-"],
+                k6_cmd,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
         except FileNotFoundError:
+            with _log_lock:
+                _log_buffers.pop(run_id, None)
             raise K6NotFoundError(
                 "k6가 설치되어 있지 않거나 PATH에 없습니다. "
                 "로컬에서는 k6를 설치하거나 Docker로 API를 실행하세요."
             )
         _processes[run_id] = proc
 
-    # 테스트 duration + 여유(정리·요약) 초, 최대 2시간
+    try:
+        proc.stdin.write(script_bytes)
+        proc.stdin.close()
+    except (OSError, BrokenPipeError):
+        with _processes_lock:
+            _processes.pop(run_id, None)
+        with _log_lock:
+            _log_buffers.pop(run_id, None)
+        if on_complete:
+            on_complete(run_id, -1, None, "스크립트 전달 실패")
+        return
+
     run_timeout = min(
         max(int(test.duration or 60) + 60, 120),
         7200,
     )
+    stdout_accumulator: list[bytes] = []
+    stderr_accumulator: list[bytes] = []
+
+    def read_stdout():
+        try:
+            for raw in iter(proc.stdout.readline, b""):
+                stdout_accumulator.append(raw)
+                try:
+                    line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
+                    if not line.startswith(_REQ_PREFIX):
+                        _append_log(run_id, line, "stdout")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            proc.stdout.close()
+        except Exception:
+            pass
+
+    def read_stderr():
+        try:
+            for raw in iter(proc.stderr.readline, b""):
+                stderr_accumulator.append(raw)
+                try:
+                    line = raw.decode("utf-8", errors="replace").rstrip("\n\r")
+                    _append_log(run_id, line, "stderr")
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            proc.stderr.close()
+        except Exception:
+            pass
 
     def wait_and_cleanup():
-        script_bytes = script.encode("utf-8")
         exit_code = -1
         summary = None
         error_output = None
+        t_stdout = threading.Thread(target=read_stdout, daemon=True)
+        t_stderr = threading.Thread(target=read_stderr, daemon=True)
+        t_stdout.start()
+        t_stderr.start()
         try:
-            stdout_bytes, stderr_bytes = proc.communicate(input=script_bytes, timeout=run_timeout)
-            exit_code = proc.returncode if proc.returncode is not None else -1
-            if stderr_bytes:
-                try:
-                    error_output = stderr_bytes.decode("utf-8", errors="replace").strip() or None
-                except (OSError, UnicodeDecodeError):
-                    pass
-            if stdout_bytes and _SUMMARY_MARKER in stdout_bytes and _SUMMARY_END in stdout_bytes:
-                try:
-                    start_i = stdout_bytes.index(_SUMMARY_MARKER) + len(_SUMMARY_MARKER)
-                    end_i = stdout_bytes.index(_SUMMARY_END)
-                    json_str = stdout_bytes[start_i:end_i].decode("utf-8", errors="replace")
-                    summary = _parse_k6_summary(json.loads(json_str))
-                except (ValueError, json.JSONDecodeError, TypeError, KeyError):
-                    pass
+            exit_code = proc.wait(timeout=run_timeout)
+            if exit_code is None:
+                exit_code = -1
         except subprocess.TimeoutExpired:
             proc.kill()
-            try:
-                _, stderr_bytes = proc.communicate()
-                stderr_bytes = (stderr_bytes or b"") + "\n(프로세스 타임아웃으로 종료)".encode("utf-8")
-                error_output = stderr_bytes.decode("utf-8", errors="replace").strip()
-            except Exception:
-                error_output = "프로세스 타임아웃으로 종료"
             exit_code = -9
-        except (OSError, BrokenPipeError):
-            exit_code = -1
-            error_output = "스크립트 전달 실패"
+            error_output = "프로세스 타임아웃으로 종료"
+            _append_log(run_id, error_output, "stderr")
         finally:
-            with _processes_lock:
-                _processes.pop(run_id, None)
-            if on_complete:
-                try:
-                    on_complete(run_id, exit_code, summary, error_output)
-                except Exception as e:
-                    logger.exception("on_run_complete callback failed: %s", e)
+            try:
+                proc.stdout.close()
+            except Exception:
+                pass
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+            t_stdout.join(timeout=2.0)
+            t_stderr.join(timeout=2.0)
+
+        stdout_bytes = b"".join(stdout_accumulator)
+        if not error_output and exit_code != 0:
+            with _log_lock:
+                buf = _log_buffers.get(run_id, [])
+                stderr_lines = [x for x in buf if x.startswith("[stderr] ")]
+                if stderr_lines:
+                    error_output = "\n".join(
+                        x.replace("[stderr] ", "", 1) for x in stderr_lines
+                    ).strip() or None
+        if not error_output and exit_code == -9:
+            error_output = "프로세스 타임아웃으로 종료"
+        if stdout_bytes and _SUMMARY_MARKER in stdout_bytes and _SUMMARY_END in stdout_bytes:
+            try:
+                start_i = stdout_bytes.index(_SUMMARY_MARKER) + len(_SUMMARY_MARKER)
+                end_i = stdout_bytes.index(_SUMMARY_END)
+                json_str = stdout_bytes[start_i:end_i].decode("utf-8", errors="replace")
+                summary = _parse_k6_summary(json.loads(json_str))
+            except (ValueError, json.JSONDecodeError, TypeError, KeyError):
+                pass
+        stderr_bytes = b"".join(stderr_accumulator)
+        req_from_stdout = _parse_request_responses(stdout_bytes)
+        req_from_stderr = _parse_request_responses_from_stderr(stderr_bytes)
+        request_responses = (req_from_stdout + req_from_stderr)[:_MAX_REQUEST_RESPONSES]
+        if not request_responses and (
+            _REQ_END.encode("utf-8") in stdout_bytes or _REQ_END.encode("utf-8") in stderr_bytes
+        ):
+            logger.warning(
+                "k6 __REQ__...__REQEND__ 파싱 결과 0건 (stdout %s bytes, stderr %s bytes).",
+                len(stdout_bytes),
+                len(stderr_bytes),
+            )
+        # 저장하는 요청 수는 실제 파싱한 __REQ__ 건수로 통일 (summary와 불일치 방지)
+        if summary is not None:
+            summary = {**summary, "request_count": len(request_responses)}
+        with _processes_lock:
+            _processes.pop(run_id, None)
+        if on_complete:
+            try:
+                on_complete(
+                    run_id,
+                    exit_code,
+                    summary,
+                    error_output,
+                    request_responses=request_responses,
+                )
+            except Exception as e:
+                logger.exception("on_run_complete callback failed: %s", e)
 
     t = threading.Thread(target=wait_and_cleanup, daemon=True)
     t.start()

@@ -4,10 +4,12 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
     Integer,
+    LargeBinary,
     String,
     Text,
 )
@@ -25,6 +27,7 @@ class PerformanceTest(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
+    engine: Mapped[str] = mapped_column(String(32), nullable=False, default="http")  # http=k6, browser=Playwright
     target_url: Mapped[str] = mapped_column(String(2048), nullable=False)  # base URL (no query)
     query_params: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array [{"key":"k","value":"v"},...]
     http_method: Mapped[str] = mapped_column(String(16), nullable=False)
@@ -35,6 +38,11 @@ class PerformanceTest(Base):
     request_delay: Mapped[float | None] = mapped_column(Float, nullable=True)
     ramp_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # seconds, 0 = no ramp
     iterations: Mapped[int | None] = mapped_column(Integer, nullable=True)  # total iterations; null = duration mode
+    body_preview_size: Mapped[int] = mapped_column(Integer, nullable=False, default=500)  # 응답 본문 미리보기 글자 수
+    vu_url_suffix: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # 경로 끝에 {{VU}} 붙이기
+    # 요청 URL 또는 응답 본문 판별: error_page_pattern 문자열 기준. match_mode: contains=포함 시 실패, not_contains=미포함 시 실패
+    error_page_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_page_match_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="contains")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -52,6 +60,7 @@ class TestRun(Base):
     test_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("performance_test.id", ondelete="CASCADE"), nullable=False
     )
+    engine: Mapped[str] = mapped_column(String(32), nullable=False, default="http")
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="Ready")
     started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -59,7 +68,10 @@ class TestRun(Base):
 
     test: Mapped["PerformanceTest"] = relationship("PerformanceTest", back_populates="runs")
     result: Mapped["TestResult | None"] = relationship(
-        "TestResult", back_populates="run", uselist=False
+        "TestResult", back_populates="run", uselist=False, cascade="all, delete-orphan"
+    )
+    request_responses: Mapped[list["RunRequestResponse"]] = relationship(
+        "RunRequestResponse", back_populates="run", cascade="all, delete-orphan"
     )
 
 
@@ -79,8 +91,34 @@ class TestResult(Base):
     tps_or_rps: Mapped[float] = mapped_column(Float, nullable=False)
     execution_time: Mapped[float] = mapped_column(Float, nullable=False)  # seconds
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)  # k6 stderr 등 실패 사유
+    # 브라우저(렌더링) Run 전용 메트릭 (nullable)
+    lcp_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    fcp_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    cls: Mapped[float | None] = mapped_column(Float, nullable=True)
+    ttfb_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     run: Mapped["TestRun"] = relationship("TestRun", back_populates="result")
+
+
+class RunRequestResponse(Base):
+    """실행 시 각 HTTP 요청별 응답 (상태코드, 응답시간, 본문, 요청 시각). run당 최대 1만 건."""
+
+    __tablename__ = "run_request_response"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    run_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("test_run.id", ondelete="CASCADE"), nullable=False
+    )
+    seq: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-based order
+    status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    response_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+    body_preview: Mapped[str | None] = mapped_column(Text, nullable=True)  # max 500 chars
+    requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 요청 시각
+    request_args: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: url, method, headers, body (해당 요청 기준)
+    screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # 브라우저 Run VU별 PNG
+    failed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)  # 200이어도 에러 페이지 등으로 실패한 경우 True
+
+    run: Mapped["TestRun"] = relationship("TestRun", back_populates="request_responses")
 
 
 def init_db(engine: Any) -> None:

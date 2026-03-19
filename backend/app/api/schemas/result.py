@@ -16,3 +16,7 @@ class ResultResponse(BaseModel):
     tps_or_rps: float = Field(alias="tpsOrRps")
     execution_time: float = Field(alias="executionTime")
     error_message: str | None = Field(None, alias="errorMessage")  # 실패 사유 (k6 stderr 등)
+    lcp_ms: float | None = Field(None, alias="lcpMs")
+    fcp_ms: float | None = Field(None, alias="fcpMs")
+    cls: float | None = Field(None, alias="cls")
+    ttfb_ms: float | None = Field(None, alias="ttfbMs")
