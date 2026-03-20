@@ -4,8 +4,8 @@
     <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
     <v-alert v-else-if="loadError" type="error" density="compact" class="mb-2">{{ loadError }}</v-alert>
     <v-form v-else @submit.prevent="onSubmit" class="test-form compact-form">
-      <v-row dense>
-        <v-col cols="12" sm="5" md="3">
+      <v-row dense class="align-center mb-2 form-row-nowrap-sm">
+        <v-col cols="12" sm="5" md="4" class="field-col-shrink">
           <v-text-field
             v-model="form.name"
             required
@@ -24,23 +24,59 @@
             </template>
           </v-text-field>
         </v-col>
-        <v-col cols="12" sm="4" md="2">
+        <v-col cols="12" sm="7" md="8" class="d-flex align-center flex-nowrap ga-3 engine-col">
+          <span class="text-body-2 text-medium-emphasis flex-shrink-0 d-none d-sm-inline">실행 방식</span>
           <v-radio-group
             v-model="form.engine"
             inline
             density="compact"
             hide-details
-            label="실행 방식"
-            class="engine-radio"
+            class="engine-radio flex-grow-1"
           >
             <v-radio label="k6 (HTTP)" value="http" />
             <v-radio label="브라우저 (렌더링)" value="browser" />
           </v-radio-group>
         </v-col>
-        <v-col cols="12" sm="3" md="2">
+      </v-row>
+
+      <v-row v-if="form.engine === 'http'" dense class="align-center mb-2 form-row-nowrap-sm checkbox-options-row">
+        <v-col cols="12" md="6" class="checkbox-help-row pe-md-6">
+          <v-checkbox
+            v-model="scenarioMode"
+            label="다단계 시나리오 (k6)"
+            density="compact"
+            hide-details
+            class="checkbox-help-row__check"
+          />
+          <v-tooltip location="top" max-width="320" class="checkbox-help-row__tip">
+            <template #activator="{ props }">
+              <v-icon v-bind="props" size="small" class="label-tip-icon">mdi-information-outline</v-icon>
+            </template>
+            <span>각 VU가 같은 단계를 순서대로 실행합니다. 이전 응답 JSON을 path로 꺼내 다음 단계 URL·헤더·본문에 변수로 넣을 수 있습니다.</span>
+          </v-tooltip>
+        </v-col>
+        <v-col cols="12" md="6" class="checkbox-help-row">
+          <v-checkbox
+            v-model="form.vuUrlSuffix"
+            label="경로 끝에 VU 번호 붙이기"
+            density="compact"
+            hide-details
+            class="checkbox-help-row__check"
+          />
+          <v-tooltip location="top" class="checkbox-help-row__tip">
+            <template #activator="{ props }">
+              <v-icon v-bind="props" size="small" class="label-tip-icon">mdi-information-outline</v-icon>
+            </template>
+            <span>예: /a/b/ccc → /a/b/ccc1, ccc2. 시나리오면 각 단계 URL에 적용됩니다.</span>
+          </v-tooltip>
+        </v-col>
+      </v-row>
+
+      <v-row v-if="!scenarioMode || form.engine !== 'http'" dense class="align-center mb-2 form-row-nowrap-sm">
+        <v-col cols="12" sm="3" md="2" class="flex-shrink-0">
           <v-select
             v-model="form.httpMethod"
-            :items="['GET', 'POST', 'PUT', 'DELETE']"
+            :items="['GET', 'POST', 'PUT', 'PATCH', 'DELETE']"
             density="compact"
             hide-details
             label="HTTP 메서드"
@@ -55,7 +91,7 @@
             </template>
           </v-select>
         </v-col>
-        <v-col cols="12" sm="4" md="5">
+        <v-col cols="12" sm="9" md="10" style="min-width: 0">
           <v-text-field
             :model-value="urlDisplay"
             placeholder="https://example.com?a=b"
@@ -71,22 +107,321 @@
                 <template #activator="{ props }">
                   <v-icon v-bind="props" size="small" class="label-tip-icon">mdi-information-outline</v-icon>
                 </template>
-                <span>부하를 줄 웹 주소입니다. VU마다 다른 URL을 쓰려면 경로에 <code>{{ vuPlaceholder }}</code>를 넣거나, 아래 "경로 끝에 VU 번호 붙이기"를 사용하세요.</span>
+                <span>부하를 줄 주소입니다. VU별로 다르게 하려면 경로에 <code>{{ vuPlaceholder }}</code>를 넣거나 위 옵션을 사용하세요.</span>
               </v-tooltip>
             </template>
           </v-text-field>
         </v-col>
-        <v-col cols="12" class="d-flex align-center">
-          <v-checkbox
-            v-model="form.vuUrlSuffix"
-            label="경로 끝에 VU 번호 붙이기"
-            density="compact"
-            hide-details
-          />
-          <span class="text-caption text-medium-emphasis ml-1">(예: /a/b/ccc → /a/b/ccc1, ccc2)</span>
+      </v-row>
+
+      <v-row v-if="scenarioMode && form.engine === 'http'" dense class="mt-2">
+        <v-col cols="12">
+          <p class="text-subtitle-2 mb-2">HTTP 단계</p>
+          <v-card
+            v-for="(step, si) in scenarioSteps"
+            :key="si"
+            variant="outlined"
+            class="mb-3 pa-3 scenario-step-card"
+          >
+            <div class="d-flex align-center justify-space-between mb-2">
+              <span class="text-body-2 font-weight-medium">단계 {{ si + 1 }}</span>
+              <v-btn
+                icon
+                variant="text"
+                size="small"
+                color="error"
+                :disabled="scenarioSteps.length <= 1"
+                @click="removeScenarioStep(si)"
+              >
+                <v-icon size="small">mdi-delete-outline</v-icon>
+              </v-btn>
+            </div>
+            <div class="scenario-step-request-block mb-3">
+              <v-row dense>
+                <v-col cols="12" md="6" lg="4">
+                  <v-text-field
+                    v-model="step.name"
+                    label="단계 이름 (선택)"
+                    placeholder="login"
+                    density="compact"
+                    hide-details="auto"
+                  />
+                </v-col>
+              </v-row>
+              <v-row dense class="form-row-nowrap-sm">
+                <v-col cols="12" sm="3" md="2" class="flex-shrink-0">
+                  <v-select
+                    v-model="step.method"
+                    :items="['GET', 'POST', 'PUT', 'PATCH', 'DELETE']"
+                    label="메서드"
+                    density="compact"
+                    hide-details
+                  />
+                </v-col>
+                <v-col cols="12" sm="9" md="10" class="scenario-step-url-col">
+                  <v-text-field
+                    v-model="step.url"
+                    label="URL (쿼리는 아래 Params 탭)"
+                    placeholder="https://api.example.com/v1/..."
+                    density="compact"
+                    hide-details="auto"
+                    :error-messages="errors.scenarioUrls && errors.scenarioUrls[si] ? [errors.scenarioUrls[si]] : []"
+                  />
+                </v-col>
+              </v-row>
+              <v-row dense class="mt-1">
+                <v-col cols="12" sm="6" md="4">
+                  <v-text-field
+                    v-model="step.sleepAfterSeconds"
+                    label="다음 스텝 전 대기(초)"
+                    type="number"
+                    min="0"
+                    max="600"
+                    step="0.1"
+                    density="compact"
+                    hide-details="auto"
+                    hint="0 또는 비움 = 스텝 간 대기 없음. 이 단계 응답·기록 직후 적용."
+                    persistent-hint
+                  />
+                </v-col>
+              </v-row>
+            </div>
+            <v-tabs v-model="step.scenarioTab" density="compact" class="scenario-step-tabs mb-2">
+              <v-tab value="params">Params</v-tab>
+              <v-tab value="headers">Headers</v-tab>
+              <v-tab value="body">Body</v-tab>
+              <v-tab value="capture">캡처</v-tab>
+            </v-tabs>
+            <v-window v-model="step.scenarioTab" class="scenario-step-window">
+              <v-window-item value="params">
+                <div class="kv-section">
+                  <div v-for="(row, pi) in step.paramsList" :key="pi" class="kv-row">
+                    <v-checkbox
+                      v-model="row.enabled"
+                      hide-details
+                      density="compact"
+                      class="param-check flex-shrink-0"
+                    />
+                    <v-text-field v-model="row.key" placeholder="Key" density="compact" hide-details class="kv-key" />
+                    <v-text-field
+                      v-model="row.value"
+                      :placeholder="`Value (VU별: ${vuPlaceholder})`"
+                      density="compact"
+                      hide-details
+                      class="kv-value"
+                    />
+                    <v-btn
+                      icon
+                      variant="text"
+                      size="small"
+                      color="error"
+                      :disabled="step.paramsList.length <= 1"
+                      @click="removeScenarioParam(si, pi)"
+                    >
+                      <v-icon size="small">mdi-delete-outline</v-icon>
+                    </v-btn>
+                  </div>
+                  <v-btn size="small" variant="tonal" class="mt-1" @click="addScenarioParam(si)">추가</v-btn>
+                </div>
+              </v-window-item>
+              <v-window-item value="headers">
+                <div class="kv-section">
+                  <div v-for="(row, hi) in step.headersList" :key="hi" class="kv-row">
+                    <v-checkbox v-model="row.enabled" hide-details density="compact" class="param-check flex-shrink-0" />
+                    <v-text-field v-model="row.key" placeholder="Key" density="compact" hide-details class="kv-key" />
+                    <v-text-field
+                      v-model="row.value"
+                      :placeholder="`Value (VU별: ${vuPlaceholder})`"
+                      density="compact"
+                      hide-details
+                      class="kv-value"
+                    />
+                    <v-btn
+                      icon
+                      variant="text"
+                      size="small"
+                      color="error"
+                      :disabled="step.headersList.length <= 1"
+                      @click="removeScenarioHeader(si, hi)"
+                    >
+                      <v-icon size="small">mdi-delete-outline</v-icon>
+                    </v-btn>
+                  </div>
+                  <v-btn size="small" variant="tonal" class="mt-1" @click="addScenarioHeader(si)">헤더 추가</v-btn>
+                </div>
+              </v-window-item>
+              <v-window-item value="body">
+                <div class="textarea-col">
+                  <v-textarea
+                    v-model="step.body"
+                    :placeholder="`요청 본문. VU별: ${vuPlaceholder} 삽입 가능`"
+                    rows="4"
+                    density="compact"
+                    hide-details
+                    auto-grow
+                  />
+                </div>
+              </v-window-item>
+              <v-window-item value="capture">
+                <v-alert type="info" density="compact" variant="tonal" class="mb-3 capture-tab-help">
+                  <div class="text-body-2">
+                    HTTP <strong>2xx</strong>일 때만 값을 꺼냅니다.
+                    <strong>JSON 본문</strong>: 응답을 JSON으로 파싱한 뒤 점(.) 경로로 필드를 고릅니다.
+                    <strong>응답 헤더</strong>: 헤더 이름(key)으로 조회합니다(대소문자 무시). Set-Cookie는
+                    <strong>쿠키 이름(선택)</strong>을 넣으면 <code class="capture-code">access_token=…; Path=/</code>에서 값(… )만 잘라 씁니다.
+                    그다음 단계 URL·Params·Headers·Body에
+                    <code v-pre class="capture-code">{{변수명}}</code>을 넣으면 치환됩니다. 변수명·JSON 경로·헤더 이름을 모두 비우면 캡처하지 않습니다.
+                  </div>
+                </v-alert>
+                <v-row dense class="mb-2">
+                  <v-col cols="12" sm="6">
+                    <v-select
+                      v-model="step.captureFrom"
+                      :items="captureSourceItems"
+                      item-title="title"
+                      item-value="value"
+                      label="캡처 출처"
+                      density="compact"
+                      hide-details
+                    />
+                  </v-col>
+                  <v-col cols="12" sm="6">
+                    <v-text-field
+                      v-model="step.captureVar"
+                      label="변수명"
+                      placeholder="token"
+                      hint="영문·숫자·밑줄. 다음 단계에 {{ 이름 }} 형태로 사용."
+                      persistent-hint
+                      density="compact"
+                      hide-details="auto"
+                    />
+                  </v-col>
+                </v-row>
+                <v-row dense>
+                  <v-col cols="12" sm="6">
+                    <v-text-field
+                      v-if="step.captureFrom !== 'header'"
+                      v-model="step.capturePath"
+                      label="JSON 경로 (path)"
+                      placeholder="예: access_token, data.id"
+                      hint="응답 JSON 루트부터의 키 경로. 배열 인덱스(n)는 미지원."
+                      persistent-hint
+                      density="compact"
+                      hide-details="auto"
+                    />
+                    <v-text-field
+                      v-else
+                      v-model="step.captureHeader"
+                      label="응답 헤더 이름"
+                      placeholder="예: X-Request-Id, Set-Cookie"
+                      hint="실제 응답 헤더 키와 대소문자만 다르면 같은 것으로 봅니다."
+                      persistent-hint
+                      density="compact"
+                      hide-details="auto"
+                    />
+                  </v-col>
+                  <v-col v-if="step.captureFrom === 'header'" cols="12" sm="6">
+                    <v-text-field
+                      v-model="step.captureCookieName"
+                      label="쿠키 이름 (선택)"
+                      placeholder="예: access_token"
+                      hint="Set-Cookie 한 줄에서 이 이름의 값만 사용. 비우면 헤더 값 전체를 변수에 넣습니다."
+                      persistent-hint
+                      density="compact"
+                      hide-details="auto"
+                    />
+                  </v-col>
+                </v-row>
+              </v-window-item>
+            </v-window>
+          </v-card>
+          <v-btn size="small" variant="tonal" @click="addScenarioStep">단계 추가</v-btn>
         </v-col>
       </v-row>
-      <v-row dense>
+      <template v-if="!(scenarioMode && form.engine === 'http')">
+      <br/>
+      <v-tabs v-model="requestTab" density="compact" class="request-tabs mb-2">
+        <v-tab value="params">
+          Params
+          <v-tooltip location="top">
+            <template #activator="{ props }">
+              <v-icon v-bind="props" size="x-small" class="ml-1 label-tip-icon">mdi-information-outline</v-icon>
+            </template>
+            <span>URL 뒤에 붙는 검색 조건(쿼리)입니다. (예: ?page=1)</span>
+          </v-tooltip>
+        </v-tab>
+        <v-tab value="headers">
+          Headers
+          <v-tooltip location="top">
+            <template #activator="{ props }">
+              <v-icon v-bind="props" size="x-small" class="ml-1 label-tip-icon">mdi-information-outline</v-icon>
+            </template>
+            <span>요청에 넣는 부가 정보입니다. (인증 토큰, Content-Type 등)</span>
+          </v-tooltip>
+        </v-tab>
+        <v-tab value="body">
+          Body
+          <v-tooltip location="top">
+            <template #activator="{ props }">
+              <v-icon v-bind="props" size="x-small" class="ml-1 label-tip-icon">mdi-information-outline</v-icon>
+            </template>
+            <span>POST/PUT 등으로 보낼 본문 내용(JSON 등)입니다.</span>
+          </v-tooltip>
+        </v-tab>
+      </v-tabs>
+      <v-window v-model="requestTab" class="request-window">
+        <v-window-item value="params">
+          <div class="kv-section">
+            <div v-for="(row, i) in form.paramsList" :key="i" class="kv-row">
+              <v-checkbox
+                v-model="row.enabled"
+                hide-details
+                density="compact"
+                class="param-check flex-shrink-0"
+                @update:model-value="syncUrlFromParams"
+              />
+              <v-text-field v-model="row.key" placeholder="Key" density="compact" hide-details class="kv-key" @update:model-value="syncUrlFromParams" />
+              <v-text-field v-model="row.value" :placeholder="`Value (VU별: value-${vuPlaceholder})`" density="compact" hide-details class="kv-value" @update:model-value="syncUrlFromParams" />
+              <v-btn icon variant="text" size="small" color="error" :disabled="form.paramsList.length <= 1" @click="removeParam(i)">
+                <v-icon size="small">mdi-delete-outline</v-icon>
+              </v-btn>
+            </div>
+            <v-btn size="small" variant="tonal" class="mt-1" @click="addParam">추가</v-btn>
+          </div>
+        </v-window-item>
+        <v-window-item value="headers">
+          <div class="kv-section">
+            <div v-for="(row, i) in form.headersList" :key="i" class="kv-row">
+              <v-checkbox
+                v-model="row.enabled"
+                hide-details
+                density="compact"
+                class="param-check flex-shrink-0"
+              />
+              <v-text-field v-model="row.key" placeholder="Key" density="compact" hide-details class="kv-key" />
+              <v-text-field v-model="row.value" :placeholder="`Value (VU별: value-${vuPlaceholder})`" density="compact" hide-details class="kv-value" />
+              <v-btn icon variant="text" size="small" color="error" :disabled="form.headersList.length <= 1" @click="removeHeader(i)">
+                <v-icon size="small">mdi-delete-outline</v-icon>
+              </v-btn>
+            </div>
+            <v-btn size="small" variant="tonal" class="mt-1" @click="addHeader">추가</v-btn>
+          </div>
+        </v-window-item>
+        <v-window-item value="body">
+          <div class="textarea-col">
+            <v-textarea
+              v-model="form.requestBody"
+              :placeholder="`요청 본문 입력. VU마다 다르게 하려면 본문에 ${vuPlaceholder}를 넣으세요.`"
+              rows="4"
+              density="compact"
+              hide-details
+              auto-grow
+            />
+          </div>
+        </v-window-item>
+      </v-window>
+      </template>
+      <v-row dense class="load-settings-row mt-3">
         <v-col cols="6" sm="4" md="2">
           <v-text-field
             v-model.number="form.vus"
@@ -103,6 +438,26 @@
                   <v-icon v-bind="props" size="small" class="label-tip-icon">mdi-information-outline</v-icon>
                 </template>
                 <span>동시에 요청을 보내는 '가상 사용자' 수입니다. 10이면 10명이 동시에 접속한 것처럼 테스트합니다.</span>
+              </v-tooltip>
+            </template>
+          </v-text-field>
+        </v-col>
+        <v-col cols="6" sm="4" md="2">
+          <v-text-field
+            v-model.number="form.vuStart"
+            type="number"
+            min="1"
+            density="compact"
+            hide-details="auto"
+            :error-messages="errors.vuStart ? [errors.vuStart] : []"
+            :label="`${vuPlaceholder} 시작 번호`"
+          >
+            <template #append>
+              <v-tooltip location="top">
+                <template #activator="{ props }">
+                  <v-icon v-bind="props" size="small" class="label-tip-icon">mdi-information-outline</v-icon>
+                </template>
+                <span>k6에서 첫 번째 VU(__VU=1)에 URL·본문 등의 {{ vuPlaceholder }} 자리에 들어갈 숫자입니다. 이후 VU는 1씩 증가합니다.</span>
               </v-tooltip>
             </template>
           </v-text-field>
@@ -195,121 +550,70 @@
             max="10000"
             density="compact"
             hide-details
-            label="응답 본문 미리보기(자)"
+            label="결과 화면 본문 표시(자)"
           >
             <template #append>
               <v-tooltip location="top">
                 <template #activator="{ props }">
                   <v-icon v-bind="props" size="small" class="label-tip-icon">mdi-information-outline</v-icon>
                 </template>
-                <span>각 요청 응답 본문을 저장할 때 잘라낼 글자 수입니다. 0이면 저장하지 않습니다.</span>
+                <span>실행 결과 목록·호버에서 응답 본문을 잘라 보여줄 글자 수입니다. DB에는 응답 본문 전체가 저장됩니다. 0이면 목록에는 …만 보이고 호버로 전체를 볼 수 있습니다.</span>
               </v-tooltip>
             </template>
           </v-text-field>
         </v-col>
       </v-row>
-      <br/>
-      <v-tabs v-model="requestTab" density="compact" class="request-tabs mb-2">
-        <v-tab value="params">
-          Params
-          <v-tooltip location="top">
-            <template #activator="{ props }">
-              <v-icon v-bind="props" size="x-small" class="ml-1 label-tip-icon">mdi-information-outline</v-icon>
-            </template>
-            <span>URL 뒤에 붙는 검색 조건(쿼리)입니다. (예: ?page=1)</span>
-          </v-tooltip>
-        </v-tab>
-        <v-tab value="headers">
-          Headers
-          <v-tooltip location="top">
-            <template #activator="{ props }">
-              <v-icon v-bind="props" size="x-small" class="ml-1 label-tip-icon">mdi-information-outline</v-icon>
-            </template>
-            <span>요청에 넣는 부가 정보입니다. (인증 토큰, Content-Type 등)</span>
-          </v-tooltip>
-        </v-tab>
-        <v-tab value="body">
-          Body
-          <v-tooltip location="top">
-            <template #activator="{ props }">
-              <v-icon v-bind="props" size="x-small" class="ml-1 label-tip-icon">mdi-information-outline</v-icon>
-            </template>
-            <span>POST/PUT 등으로 보낼 본문 내용(JSON 등)입니다.</span>
-          </v-tooltip>
-        </v-tab>
-      </v-tabs>
-      <v-window v-model="requestTab" class="request-window">
-        <v-window-item value="params">
-          <div class="kv-section">
-            <div v-for="(row, i) in form.paramsList" :key="i" class="kv-row">
-              <v-checkbox
-                v-model="row.enabled"
-                hide-details
-                density="compact"
-                class="param-check flex-shrink-0"
-                @update:model-value="syncUrlFromParams"
-              />
-              <v-text-field v-model="row.key" placeholder="Key" density="compact" hide-details class="kv-key" @update:model-value="syncUrlFromParams" />
-              <v-text-field v-model="row.value" :placeholder="`Value (VU별: value-${vuPlaceholder})`" density="compact" hide-details class="kv-value" @update:model-value="syncUrlFromParams" />
-              <v-btn icon variant="text" size="small" color="error" :disabled="form.paramsList.length <= 1" @click="removeParam(i)">
-                <v-icon size="small">mdi-delete-outline</v-icon>
-              </v-btn>
-            </div>
-            <v-btn size="small" variant="tonal" class="mt-1" @click="addParam">추가</v-btn>
-          </div>
-        </v-window-item>
-        <v-window-item value="headers">
-          <div class="kv-section">
-            <div v-for="(row, i) in form.headersList" :key="i" class="kv-row">
-              <v-checkbox
-                v-model="row.enabled"
-                hide-details
-                density="compact"
-                class="param-check flex-shrink-0"
-              />
-              <v-text-field v-model="row.key" placeholder="Key" density="compact" hide-details class="kv-key" />
-              <v-text-field v-model="row.value" :placeholder="`Value (VU별: value-${vuPlaceholder})`" density="compact" hide-details class="kv-value" />
-              <v-btn icon variant="text" size="small" color="error" :disabled="form.headersList.length <= 1" @click="removeHeader(i)">
-                <v-icon size="small">mdi-delete-outline</v-icon>
-              </v-btn>
-            </div>
-            <v-btn size="small" variant="tonal" class="mt-1" @click="addHeader">추가</v-btn>
-          </div>
-        </v-window-item>
-        <v-window-item value="body">
-          <div class="textarea-col">
-            <v-textarea
-              v-model="form.requestBody"
-              :placeholder="`요청 본문 입력. VU마다 다르게 하려면 본문에 ${vuPlaceholder}를 넣으세요.`"
-              rows="4"
+      <div class="mt-2 error-page-section">
+        <div class="text-caption text-medium-emphasis mb-1">
+          에러 페이지 판별 (URL·응답 본문). 조건을 여러 개 두면 <strong>하나라도</strong> 실패 조건이면 해당 요청이 실패로 집계됩니다.
+        </div>
+        <v-row
+          v-for="(row, idx) in form.errorPageRules"
+          :key="'err-' + idx"
+          dense
+          class="align-end form-row-nowrap-sm error-page-row"
+        >
+          <v-col cols="12" sm="5" md="4" class="flex-shrink-0 error-page-mode-col">
+            <v-select
+              v-model="row.matchMode"
+              label="판별 방식"
+              :items="errorMatchModeItems"
+              item-title="title"
+              item-value="value"
               density="compact"
               hide-details
-              auto-grow
             />
-          </div>
-        </v-window-item>
-      </v-window>
-      <div class="mt-2">
-        <v-text-field
-          v-model="form.errorPagePattern"
-          label="에러 페이지 판별 문자열"
-          placeholder="요청 URL 또는 응답 본문 검사 (비우면 미사용)"
-          density="compact"
-          hide-details
-        />
-        <v-select
-          v-model="form.errorPageMatchMode"
-          label="판별 방식"
-          :items="[
-            { title: '포함 시 실패', value: 'contains' },
-            { title: '미포함 시 실패', value: 'not_contains' },
-          ]"
-          item-title="title"
-          item-value="value"
-          density="compact"
-          hide-details
-          class="mt-1"
-        />
+          </v-col>
+          <v-col cols="12" sm="6" md="7" class="error-page-pattern-col">
+            <v-text-field
+              v-model="row.pattern"
+              label="판별 문자열"
+              placeholder="비우면 이 줄은 무시"
+              density="compact"
+              hide-details
+            />
+          </v-col>
+          <v-col cols="12" sm="1" md="1" class="d-flex align-center error-page-actions-col">
+            <v-btn
+              v-if="form.errorPageRules.length > 1"
+              icon="mdi-delete-outline"
+              variant="text"
+              size="small"
+              density="compact"
+              aria-label="조건 삭제"
+              @click="removeErrorPageRule(idx)"
+            />
+            <v-btn
+              v-if="idx === form.errorPageRules.length - 1"
+              icon="mdi-plus"
+              variant="text"
+              size="small"
+              density="compact"
+              aria-label="조건 추가"
+              @click="addErrorPageRule"
+            />
+          </v-col>
+        </v-row>
       </div>
       <div class="d-flex align-center flex-wrap mt-2">
         <v-btn type="submit" color="primary" :loading="saving" size="small" class="mr-2">저장</v-btn>
@@ -327,6 +631,14 @@ import { useRoute, useRouter } from 'vue-router'
 import { get, post, put, getApiErrorMessage } from '../services/api'
 
 const vuPlaceholder = '{{VU}}'
+const errorMatchModeItems = [
+  { title: '판별 문구가 있으면 실패', value: 'contains' },
+  { title: '판별 문구가 없으면 실패', value: 'not_contains' },
+]
+const captureSourceItems = [
+  { title: 'JSON 본문 (path)', value: 'json' },
+  { title: '응답 헤더', value: 'header' },
+]
 const route = useRoute()
 const router = useRouter()
 const isEdit = computed(() => route.name === 'test-edit')
@@ -340,6 +652,147 @@ const errors = reactive({})
 const requestTab = ref('params')
 const urlDisplay = ref('')
 
+function emptyScenarioStep() {
+  return {
+    name: '',
+    method: 'GET',
+    url: '',
+    scenarioTab: 'params',
+    paramsList: [{ key: '', value: '', enabled: false }],
+    headersList: [{ key: '', value: '', enabled: false }],
+    body: '',
+    captureFrom: 'json',
+    capturePath: '',
+    captureHeader: '',
+    captureCookieName: '',
+    captureVar: '',
+    sleepAfterSeconds: '',
+  }
+}
+
+const scenarioMode = ref(false)
+const scenarioSteps = ref([emptyScenarioStep()])
+
+/** 다단계 켜질 때 첫 단계 URL이 비어 있으면 단일 요청 폼 값을 복사 */
+function seedFirstScenarioStepFromForm() {
+  if (form.engine !== 'http') return
+  const first = scenarioSteps.value[0]
+  if (!first || (first.url || '').trim()) return
+  first.method = form.httpMethod || 'GET'
+  first.url = (form.baseUrl || '').trim()
+  first.paramsList = JSON.parse(JSON.stringify(form.paramsList || [{ key: '', value: '', enabled: false }]))
+  first.headersList = JSON.parse(JSON.stringify(form.headersList || [{ key: '', value: '', enabled: false }]))
+  first.body = form.requestBody != null ? String(form.requestBody) : ''
+}
+
+function addScenarioStep() {
+  scenarioSteps.value.push(emptyScenarioStep())
+}
+
+function removeScenarioStep(i) {
+  if (scenarioSteps.value.length <= 1) return
+  scenarioSteps.value.splice(i, 1)
+}
+
+function addScenarioHeader(stepIndex) {
+  scenarioSteps.value[stepIndex].headersList.push({ key: '', value: '', enabled: false })
+}
+
+function removeScenarioHeader(stepIndex, hi) {
+  const list = scenarioSteps.value[stepIndex].headersList
+  if (list.length <= 1) return
+  list.splice(hi, 1)
+}
+
+function addScenarioParam(stepIndex) {
+  scenarioSteps.value[stepIndex].paramsList.push({ key: '', value: '', enabled: false })
+}
+
+function removeScenarioParam(stepIndex, pi) {
+  const list = scenarioSteps.value[stepIndex].paramsList
+  if (list.length <= 1) return
+  list.splice(pi, 1)
+}
+
+function stepFromApi(s) {
+  const headers = s.headers && typeof s.headers === 'object' ? s.headers : {}
+  const hEntries = Object.entries(headers)
+  const qp = Array.isArray(s.queryParams) ? s.queryParams : []
+  const paramsList = qp.length
+    ? qp.map((item) => ({
+        key: item && typeof item === 'object' && 'key' in item ? String(item.key ?? '') : '',
+        value: item && typeof item === 'object' && 'value' in item ? String(item.value ?? '') : '',
+        enabled: true,
+      }))
+    : [{ key: '', value: '', enabled: false }]
+  return {
+    name: s.name || '',
+    method: s.method || 'GET',
+    url: s.url || '',
+    scenarioTab: 'params',
+    paramsList,
+    headersList: hEntries.length
+      ? hEntries.map(([k, v]) => ({ key: k, value: String(v ?? ''), enabled: true }))
+      : [{ key: '', value: '', enabled: false }],
+    body: s.body || '',
+    captureFrom: s.capture && String(s.capture.from || '').toLowerCase() === 'header' ? 'header' : 'json',
+    capturePath: s.capture?.path || '',
+    captureHeader: s.capture?.header || '',
+    captureCookieName: s.capture?.cookieName || '',
+    captureVar: s.capture?.var || '',
+    sleepAfterSeconds:
+      s.sleepAfterSeconds != null && s.sleepAfterSeconds !== '' ? String(s.sleepAfterSeconds) : '',
+  }
+}
+
+function buildHttpScenarioPayload() {
+  const out = []
+  for (const s of scenarioSteps.value) {
+    const u = (s.url || '').trim()
+    if (!u) continue
+    const capVar = (s.captureVar || '').trim()
+    const row = {
+      name: (s.name || '').trim() || undefined,
+      method: s.method || 'GET',
+      url: u,
+    }
+    const qp = (s.paramsList || [])
+      .filter((r) => r.enabled !== false && r.key != null && String(r.key).trim())
+      .map((r) => ({ key: String(r.key).trim(), value: r.value != null ? String(r.value).trim() : '' }))
+    if (qp.length) row.queryParams = qp
+    const h = {}
+    ;(s.headersList || [])
+      .filter((r) => r.enabled !== false && r.key != null && String(r.key).trim())
+      .forEach((r) => {
+        h[String(r.key).trim()] = r.value != null ? String(r.value).trim() : ''
+      })
+    if (Object.keys(h).length) row.headers = h
+    const b = (s.body || '').trim()
+    if (b) row.body = b
+    if (capVar) {
+      if (s.captureFrom === 'header') {
+        const ch = (s.captureHeader || '').trim()
+        if (ch) {
+          const ccn = (s.captureCookieName || '').trim()
+          row.capture = ccn
+            ? { from: 'header', header: ch, cookieName: ccn, var: capVar }
+            : { from: 'header', header: ch, var: capVar }
+        }
+      } else {
+        const capPath = (s.capturePath || '').trim()
+        if (capPath) row.capture = { from: 'json', path: capPath, var: capVar }
+      }
+    }
+    const rawSleep = s.sleepAfterSeconds
+    if (rawSleep != null && rawSleep !== '') {
+      const n = Number(rawSleep)
+      if (!Number.isNaN(n) && n > 0) row.sleepAfterSeconds = n
+    }
+    out.push(row)
+  }
+  return out
+}
+
 const form = reactive({
   name: '',
   engine: 'http',
@@ -349,14 +802,14 @@ const form = reactive({
   requestBody: '',
   headersList: [{ key: '', value: '', enabled: false }],
   vus: 1,
+  vuStart: 1,
   duration: 10,
   requestDelay: null,
   rampUp: 0,
   iterations: null,
   bodyPreviewSize: 500,
   vuUrlSuffix: false,
-  errorPagePattern: '',
-  errorPageMatchMode: 'contains',
+  errorPageRules: [{ pattern: '', matchMode: 'contains' }],
 })
 
 function buildEffectiveUrl() {
@@ -403,6 +856,19 @@ watch(
   { deep: true }
 )
 
+watch(
+  () => form.engine,
+  (e) => {
+    if (e === 'browser') scenarioMode.value = false
+  }
+)
+
+watch(scenarioMode, (on, prev) => {
+  if (on && prev === false && form.engine === 'http') {
+    seedFirstScenarioStepFromForm()
+  }
+})
+
 function addParam() {
   form.paramsList.push({ key: '', value: '', enabled: false })
 }
@@ -420,6 +886,15 @@ function addHeader() {
 function removeHeader(i) {
   if (form.headersList.length <= 1) return
   form.headersList.splice(i, 1)
+}
+
+function addErrorPageRule() {
+  form.errorPageRules.push({ pattern: '', matchMode: 'contains' })
+}
+
+function removeErrorPageRule(i) {
+  if (form.errorPageRules.length <= 1) return
+  form.errorPageRules.splice(i, 1)
 }
 
 function buildQueryParamsJson() {
@@ -476,15 +951,34 @@ function fillFormFromTest(t, clone = false) {
   form.requestBody = t.requestBody ?? ''
   form.headersList = parseHeadersToList(t.headers ?? '')
   form.vus = t.vus ?? 1
+  form.vuStart = t.vuStart ?? 1
   form.duration = t.duration ?? 10
   form.requestDelay = t.requestDelay ?? null
   form.rampUp = t.rampUp ?? 0
   form.iterations = t.iterations ?? null
   form.bodyPreviewSize = t.bodyPreviewSize ?? 500
   form.vuUrlSuffix = t.vuUrlSuffix ?? false
-  form.errorPagePattern = t.errorPagePattern ?? ''
-  form.errorPageMatchMode = (t.errorPageMatchMode === 'not_contains' ? 'not_contains' : 'contains')
+  const apiRules = t.errorPageRules
+  if (Array.isArray(apiRules) && apiRules.length) {
+    form.errorPageRules = apiRules.map((r) => ({
+      pattern: r.pattern != null ? String(r.pattern) : '',
+      matchMode: r.matchMode === 'not_contains' ? 'not_contains' : 'contains',
+    }))
+  } else {
+    const p = (t.errorPagePattern || '').trim()
+    form.errorPageRules = p
+      ? [{ pattern: String(t.errorPagePattern ?? '').trim(), matchMode: t.errorPageMatchMode === 'not_contains' ? 'not_contains' : 'contains' }]
+      : [{ pattern: '', matchMode: 'contains' }]
+  }
   syncUrlFromParams()
+  const hs = t.httpScenario
+  if (form.engine === 'http' && Array.isArray(hs) && hs.length > 0) {
+    scenarioMode.value = true
+    scenarioSteps.value = hs.map(stepFromApi)
+  } else {
+    scenarioMode.value = false
+    scenarioSteps.value = [emptyScenarioStep()]
+  }
 }
 
 async function load() {
@@ -520,11 +1014,27 @@ const urlPattern = /^https?:\/\/[^\s]+$/
 function validate() {
   parseUrlAndSyncToParams()
   const e = {}
+  delete errors.scenario
+  delete errors.scenarioUrls
   if (!(form.name && form.name.trim())) e.name = '테스트 이름을 입력하세요.'
-  const base = (form.baseUrl || '').trim()
-  if (!base) e.baseUrl = '대상 URL을 입력하세요.'
-  else if (!urlPattern.test(base)) e.baseUrl = '유효한 URL 형식이 아닙니다.'
+  const scenarioActive = form.engine === 'http' && scenarioMode.value
+  if (scenarioActive) {
+    const payload = buildHttpScenarioPayload()
+    if (!payload.length) e.scenario = '시나리오에 URL이 있는 단계를 최소 1개 넣으세요.'
+    const urlErrs = {}
+    scenarioSteps.value.forEach((s, i) => {
+      const u = (s.url || '').trim()
+      if (!u) return
+      if (!urlPattern.test(u)) urlErrs[i] = '유효한 URL 형식이 아닙니다.'
+    })
+    if (Object.keys(urlErrs).length) e.scenarioUrls = urlErrs
+  } else {
+    const base = (form.baseUrl || '').trim()
+    if (!base) e.baseUrl = '대상 URL을 입력하세요.'
+    else if (!urlPattern.test(base)) e.baseUrl = '유효한 URL 형식이 아닙니다.'
+  }
   if (form.vus != null && (form.vus < 1 || !Number.isInteger(form.vus))) e.vus = '1 이상의 정수를 입력하세요.'
+  if (form.vuStart != null && (form.vuStart < 1 || !Number.isInteger(form.vuStart))) e.vuStart = '1 이상의 정수를 입력하세요.'
   if (form.duration != null && (form.duration < 1 || !Number.isInteger(form.duration))) e.duration = '1 이상의 정수를 입력하세요.'
   if (form.rampUp != null && (form.rampUp < 0 || !Number.isInteger(form.rampUp))) e.rampUp = '0 이상의 정수를 입력하세요.'
   const iter = form.iterations
@@ -539,15 +1049,23 @@ async function onSubmit() {
   if (!validate()) return
   saving.value = true
   try {
+    const isScenario = form.engine === 'http' && scenarioMode.value
+    const scenarioPayload = isScenario ? buildHttpScenarioPayload() : []
+    if (isScenario && !scenarioPayload.length) {
+      apiError.value = '시나리오에 URL이 있는 단계가 필요합니다.'
+      saving.value = false
+      return
+    }
     const body = {
       name: form.name.trim(),
       engine: (form.engine === 'browser' ? 'browser' : 'http'),
-      targetUrl: (form.baseUrl || '').trim(),
-      queryParams: buildQueryParamsJson(),
-      httpMethod: form.httpMethod,
-      requestBody: form.requestBody?.trim() || undefined,
-      headers: buildHeadersJson(),
+      targetUrl: isScenario ? scenarioPayload[0].url : (form.baseUrl || '').trim(),
+      queryParams: isScenario ? '[]' : buildQueryParamsJson(),
+      httpMethod: isScenario ? scenarioPayload[0].method : form.httpMethod,
+      requestBody: isScenario ? '' : (form.requestBody?.trim() || undefined),
+      headers: isScenario ? '{}' : buildHeadersJson(),
       vus: Number(form.vus),
+      vuStart: Number(form.vuStart),
       duration: Number(form.duration),
       requestDelay: form.requestDelay != null && form.requestDelay !== '' ? Number(form.requestDelay) : undefined,
       rampUp: Number(form.rampUp) >= 0 ? Number(form.rampUp) : 0,
@@ -559,8 +1077,13 @@ async function onSubmit() {
       })(),
       bodyPreviewSize: Math.min(10000, Math.max(0, Number(form.bodyPreviewSize) || 500)),
       vuUrlSuffix: Boolean(form.vuUrlSuffix),
-      errorPagePattern: (form.errorPagePattern || '').trim() || undefined,
-      errorPageMatchMode: (form.errorPageMatchMode === 'not_contains' ? 'not_contains' : 'contains'),
+      errorPageRules: form.errorPageRules
+        .map((r) => ({
+          pattern: (r.pattern || '').trim(),
+          matchMode: r.matchMode === 'not_contains' ? 'not_contains' : 'contains',
+        }))
+        .filter((r) => r.pattern),
+      httpScenario: form.engine === 'http' ? (isScenario ? scenarioPayload : []) : [],
     }
     if (isEdit.value) {
       await put(`tests/${testId.value}`, body)
@@ -584,6 +1107,70 @@ onMounted(() => {
 
 <style scoped>
 .test-form { width: 100%; max-width: 1200px; }
+@media (min-width: 600px) {
+  .form-row-nowrap-sm {
+    flex-wrap: nowrap !important;
+  }
+}
+.field-col-shrink {
+  min-width: 0;
+}
+.engine-col {
+  min-width: 0;
+}
+.engine-radio :deep(.v-input__control) {
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+}
+.engine-radio :deep(.v-selection-control-group) {
+  flex-direction: row !important;
+  flex-wrap: nowrap !important;
+  align-items: center;
+  gap: 4px;
+}
+.checkbox-help-row {
+  display: flex;
+  flex-direction: row;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  width: fit-content;
+  max-width: 100%;
+}
+.checkbox-help-row__check {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.checkbox-help-row__check :deep(.v-input),
+.checkbox-help-row__check :deep(.v-selection-control) {
+  width: auto;
+  max-width: 100%;
+}
+.checkbox-help-row__tip {
+  flex: 0 0 auto;
+  align-self: center;
+  line-height: 1;
+}
+.checkbox-help-row__tip :deep(.v-icon) {
+  display: block;
+}
+.checkbox-help-row :deep(.v-label) {
+  white-space: nowrap;
+}
+.error-page-pattern-col {
+  min-width: 0;
+}
+.error-page-mode-col {
+  min-width: 200px;
+}
+.capture-tab-help .capture-code {
+  font-size: 0.875em;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.06);
+}
 .label-tip-icon { vertical-align: middle; }
 .label-tip-icon:hover { background-color: #e0e0e0 !important; color: #1a1a1a !important; border-radius: 50%; }
 .label-with-tip { user-select: none; -webkit-user-select: none; }
@@ -606,6 +1193,23 @@ onMounted(() => {
 .request-tabs :deep(.v-tab:hover .v-icon),
 .request-tabs :deep(.v-tab .v-btn:hover .v-icon) { color: #1a1a1a !important; }
 .request-window { min-height: 120px; }
+.scenario-step-tabs { min-height: 36px; }
+.scenario-step-tabs :deep(.v-tab:hover),
+.scenario-step-tabs :deep(.v-tab:hover::before),
+.scenario-step-tabs :deep(.v-tab .v-btn:hover),
+.scenario-step-tabs :deep(.v-tab .v-btn:hover::before),
+.scenario-step-tabs :deep(.v-tab .v-btn__overlay),
+.scenario-step-tabs :deep(.v-tab:hover .v-btn__overlay) { background-color: #e8e8e8 !important; background: #e8e8e8 !important; color: #1a1a1a !important; opacity: 1 !important; }
+.scenario-step-tabs :deep(.v-tab:hover .v-icon),
+.scenario-step-tabs :deep(.v-tab .v-btn:hover .v-icon) { color: #1a1a1a !important; }
+.scenario-step-window { min-height: 100px; }
+.scenario-step-url-col {
+  min-width: 0;
+}
+.scenario-step-request-block {
+  padding-bottom: 8px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.12);
+}
 .kv-section { margin-bottom: 8px; }
 .kv-row {
   display: flex;

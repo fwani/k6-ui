@@ -1,11 +1,16 @@
 """Performance Test CRUD."""
 
 import uuid
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.db import PerformanceTest
+from app.services.error_page_rules import ERROR_RULES_UNCHANGED
+
+# update(..., http_scenario=...) 에서 생략 시 DB 값 유지
+HTTP_SCENARIO_UNCHANGED = object()
 
 
 def create(
@@ -25,8 +30,11 @@ def create(
     iterations: int | None = None,
     body_preview_size: int = 500,
     vu_url_suffix: bool = False,
+    vu_start: int = 1,
+    error_page_rules: str | None = None,
     error_page_pattern: str | None = None,
     error_page_match_mode: str = "contains",
+    http_scenario: str | None = None,
 ) -> PerformanceTest:
     engine_val = "browser" if (engine or "").strip().lower() == "browser" else "http"
     t = PerformanceTest(
@@ -45,8 +53,11 @@ def create(
         iterations=iterations,
         body_preview_size=body_preview_size,
         vu_url_suffix=vu_url_suffix,
+        vu_start=max(1, int(vu_start or 1)),
+        error_page_rules=error_page_rules,
         error_page_pattern=error_page_pattern,
         error_page_match_mode=(error_page_match_mode if error_page_match_mode in ("contains", "not_contains") else "contains"),
+        http_scenario=http_scenario,
     )
     db.add(t)
     db.commit()
@@ -81,8 +92,9 @@ def update(
     iterations: int | None = None,
     body_preview_size: int | None = None,
     vu_url_suffix: bool | None = None,
-    error_page_pattern: str | None = None,
-    error_page_match_mode: str | None = None,
+    vu_start: int | None = None,
+    error_rules: Any = ERROR_RULES_UNCHANGED,
+    http_scenario: Any = HTTP_SCENARIO_UNCHANGED,
 ) -> PerformanceTest:
     if name is not None:
         t.name = name
@@ -112,10 +124,15 @@ def update(
         t.body_preview_size = body_preview_size
     if vu_url_suffix is not None:
         t.vu_url_suffix = vu_url_suffix
-    if error_page_pattern is not None:
-        t.error_page_pattern = error_page_pattern
-    if error_page_match_mode is not None:
-        t.error_page_match_mode = error_page_match_mode if error_page_match_mode in ("contains", "not_contains") else "contains"
+    if vu_start is not None:
+        t.vu_start = max(1, int(vu_start))
+    if error_rules is not ERROR_RULES_UNCHANGED:
+        r_json, r_pat, r_mode = error_rules
+        t.error_page_rules = r_json
+        t.error_page_pattern = r_pat
+        t.error_page_match_mode = r_mode if r_mode in ("contains", "not_contains") else "contains"
+    if http_scenario is not HTTP_SCENARIO_UNCHANGED:
+        t.http_scenario = http_scenario
     db.commit()
     db.refresh(t)
     return t

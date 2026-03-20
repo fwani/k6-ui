@@ -10,8 +10,12 @@ from urllib.parse import quote
 from app.config import INFLUXDB_URL
 from app.models.db import PerformanceTest
 from app.services import influxdb_writer
+from app.services.error_page_rules import parse_error_rules_from_test
 
 logger = logging.getLogger(__name__)
+
+# k6_runner.VU_PLACEHOLDER 와 동일. k6_runner 임포트는 순환 참조를 피하기 위해 여기서 문자열 상수만 둠.
+VU_PLACEHOLDER = "{{VU}}"
 
 # k6_runner와 동일한 로그 버퍼 키 사용 시 순환 참조 가능하므로 별도 버퍼 유지.
 # runs.py get_run_logs에서 run.engine으로 분기해 호출함.
@@ -55,6 +59,99 @@ def _parse_headers(headers: str | None) -> dict[str, str]:
         return out
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _apply_header_overrides(
+    base: dict[str, str], overrides: dict[str, str] | None
+) -> dict[str, str]:
+    """실행 시 헤더를 테스트 헤더 위에 덮어씀. 표준 헤더 이름은 _parse_headers와 동일 규칙."""
+    if not overrides:
+        return dict(base)
+    out = dict(base)
+    for k, v in overrides.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        val = "" if v is None else str(v)
+        canonical = _HEADER_NAME_CANONICAL.get(key.lower())
+        out[canonical if canonical else key] = val
+    return out
+
+
+def _headers_for_vu(
+    headers_str: str,
+    request_header_overrides: dict[str, str] | None,
+    vu_display: str,
+) -> dict[str, str]:
+    """테스트 저장 헤더 + 실행 시 오버라이드를 합친 뒤 값에 {{VU}} 치환(k6와 동일)."""
+    merged = _apply_header_overrides(
+        _parse_headers(headers_str), request_header_overrides
+    )
+    if not merged:
+        return {}
+    vu = str(vu_display)
+    return {k: str(v).replace(VU_PLACEHOLDER, vu) for k, v in merged.items()}
+
+
+def _cookie_header_to_playwright(cookie_header: str, page_url: str) -> list[dict[str, str]]:
+    """Cookie 헤더 문자열(name=value; …)을 Playwright add_cookies 형태로. Chromium은 Cookie 헤더를 extra로 잘 못 실음."""
+    out: list[dict[str, str]] = []
+    url = (page_url or "").strip()
+    if not url:
+        return out
+    for part in cookie_header.split(";"):
+        part = part.strip()
+        if not part or "=" not in part:
+            continue
+        name, _, value = part.partition("=")
+        name, value = name.strip(), value.strip()
+        if not name:
+            continue
+        if name.lower() in (
+            "expires",
+            "max-age",
+            "domain",
+            "path",
+            "secure",
+            "httponly",
+            "samesite",
+        ):
+            continue
+        out.append({"name": name, "value": value, "url": url})
+    return out
+
+
+def _playwright_context_options(
+    merged_headers: dict[str, str], page_url: str
+) -> tuple[dict, list[dict[str, str]]]:
+    """new_context(**첫_값)과 add_cookies(둘째)로 나눔. Cookie/User-Agent는 브라우저 규칙에 맞게 처리."""
+    extra: dict[str, str] = {}
+    user_agent: str | None = None
+    cookie_strs: list[str] = []
+
+    for k, v in merged_headers.items():
+        lk = str(k).lower()
+        if lk == "cookie":
+            if v is not None and str(v).strip():
+                cookie_strs.append(str(v).strip())
+            continue
+        if lk == "user-agent":
+            vs = str(v).strip() if v is not None else ""
+            if vs:
+                user_agent = vs
+            continue
+        extra[str(k)] = "" if v is None else str(v)
+
+    cookies: list[dict[str, str]] = []
+    for cs in cookie_strs:
+        cookies.extend(_cookie_header_to_playwright(cs, page_url))
+
+    ctx_kwargs: dict = {}
+    if user_agent:
+        ctx_kwargs["user_agent"] = user_agent
+    if extra:
+        ctx_kwargs["extra_http_headers"] = extra
+    return ctx_kwargs, cookies
 
 
 def _build_url(base: str, query_params: str | None) -> str:
@@ -144,6 +241,7 @@ def start(
     run_id: str,
     test: PerformanceTest,
     on_complete: Callable[[str, int, dict | None, str | None], None] | None = None,
+    request_header_overrides: dict[str, str] | None = None,
 ) -> None:
     """Chromium으로 test.target_url를 VUs 수만큼 로드 후 Web Vitals 수집, on_complete 호출."""
     url = _build_url(
@@ -151,10 +249,14 @@ def start(
         getattr(test, "query_params", None),
     )
     vus = max(1, int(getattr(test, "vus", 1) or 1))
+    try:
+        vu_start = max(1, int(getattr(test, "vu_start", 1) or 1))
+    except (TypeError, ValueError):
+        vu_start = 1
     # 스레드에서 사용하므로 세션 종료 전에 헤더/에러패턴·판별방식 캡처
     headers_str = getattr(test, "headers", None) or ""
-    error_page_pattern_str = (getattr(test, "error_page_pattern", None) or "").strip()
-    error_page_match_mode = (getattr(test, "error_page_match_mode", None) or "contains").strip() or "contains"
+    error_rules = parse_error_rules_from_test(test)
+    has_error_rules = bool(error_rules)
 
     def run_browser() -> None:
         summary: dict | None = None
@@ -190,43 +292,91 @@ def start(
 
         results_lock = threading.Lock()
 
-        extra_headers = _parse_headers(headers_str)
-
         def run_one_vu(vu_index: int) -> None:
             with _running_lock:
                 if _running.get(run_id, {}).get("stop_requested"):
                     return
             _append_log(run_id, f"VU {vu_index + 1}/{vus} starting (concurrent)")
+            vu_display = str(vu_index + vu_start)
+            merged_headers = _headers_for_vu(
+                headers_str, request_header_overrides, vu_display
+            )
+            load_url = (
+                url.replace(VU_PLACEHOLDER, vu_display)
+                if VU_PLACEHOLDER in url
+                else url
+            )
+            ctx_kwargs, header_cookies = _playwright_context_options(
+                merged_headers, load_url
+            )
             try:
                 with sync_playwright() as p:
                     browser = p.chromium.launch(headless=True)
                     try:
-                        context = browser.new_context()
-                        if extra_headers:
-                            context.set_extra_http_headers(extra_headers)
+                        context = browser.new_context(**ctx_kwargs)
+                        if header_cookies:
+                            try:
+                                context.add_cookies(header_cookies)
+                            except Exception as ce:
+                                logger.warning(
+                                    "add_cookies failed VU %s: %s",
+                                    vu_index + 1,
+                                    ce,
+                                )
+                                _append_log(
+                                    run_id,
+                                    f"VU {vu_index + 1}: Cookie 설정 실패(형식·URL 도메인 확인): {ce}",
+                                )
+                        if merged_headers:
+                            keys = sorted(merged_headers.keys())
+                            via = []
+                            if ctx_kwargs.get("extra_http_headers"):
+                                via.append("extra_http_headers")
+                            if ctx_kwargs.get("user_agent"):
+                                via.append("user_agent")
+                            if header_cookies:
+                                via.append(f"cookies({len(header_cookies)})")
+                            _append_log(
+                                run_id,
+                                f"VU {vu_index + 1}: 적용 헤더 키 {keys} → "
+                                + (", ".join(via) if via else "(없음)"),
+                            )
                         with _running_lock:
                             if run_id in _running:
                                 _running[run_id].setdefault("contexts", []).append(context)
                         try:
                             page = context.new_page()
                             page.set_viewport_size({"width": 1920, "height": 1080})
-                            page.goto(url, wait_until="load", timeout=60000)
+                            page.goto(load_url, wait_until="load", timeout=60000)
                             vitals = page.evaluate(_WEB_VITALS_SCRIPT)
+                            body_text_stored = ""
+                            try:
+                                raw_bt = page.evaluate(
+                                    "() => (document.body && document.body.innerText) || (document.documentElement && document.documentElement.innerText) || ''"
+                                )
+                                body_text_stored = "" if raw_bt is None else str(raw_bt)
+                            except Exception:
+                                body_text_stored = ""
                             # 200이어도 판별 조건에 따라 실패 처리: contains=패턴 포함 시 실패, not_contains=패턴 미포함 시 실패
                             is_error_page = False
-                            if error_page_pattern_str:
+                            if error_rules:
                                 try:
                                     current_url = page.url or url
-                                    body_text = page.evaluate(
-                                        "() => (document.body && document.body.innerText) || (document.documentElement && document.documentElement.innerText) || ''"
-                                    )
-                                    in_url = error_page_pattern_str in (current_url or "")
-                                    in_body = error_page_pattern_str in (body_text or "")
-                                    found = in_url or in_body
-                                    if error_page_match_mode == "not_contains":
-                                        is_error_page = not found  # 패턴이 없으면 실패
-                                    else:
-                                        is_error_page = found  # 패턴이 있으면 실패 (기본)
+                                    u = current_url or ""
+                                    b = body_text_stored or ""
+                                    for rule in error_rules:
+                                        pat = rule.get("pattern") or ""
+                                        if not pat:
+                                            continue
+                                        not_contains = rule.get("matchMode") == "not_contains"
+                                        found = pat in u or pat in b
+                                        if not_contains:
+                                            if not found:
+                                                is_error_page = True
+                                                break
+                                        elif found:
+                                            is_error_page = True
+                                            break
                                 except Exception:
                                     pass
                             screenshot_bytes: bytes | None = None
@@ -264,9 +414,9 @@ def start(
                                             {
                                                 "status_code": 200,
                                                 "response_time_ms": float(resp_ms) if resp_ms is not None else None,
-                                                "body_preview": None,
+                                                "body_preview": body_text_stored or None,
                                                 "requested_at": iter_time,
-                                                "request_args": json.dumps({"url": url, "headers": extra_headers}),
+                                                "request_args": json.dumps({"url": load_url, "headers": merged_headers}),
                                                 "screenshot": screenshot_bytes,
                                                 "failed": is_error_page,
                                             },
@@ -281,9 +431,9 @@ def start(
                                             {
                                                 "status_code": 200,
                                                 "response_time_ms": None,
-                                                "body_preview": None,
+                                                "body_preview": body_text_stored or None,
                                                 "requested_at": iter_time,
-                                                "request_args": json.dumps({"url": url, "headers": extra_headers}),
+                                                "request_args": json.dumps({"url": load_url, "headers": merged_headers}),
                                                 "screenshot": screenshot_bytes,
                                                 "failed": is_error_page,
                                             },
@@ -357,7 +507,7 @@ def start(
         summary = {
             "avg_response_time": avg_ms,
             "max_response_time": max_response,
-            "failure_rate": failure_rate if error_page_pattern_str else (0.0 if exit_code == 0 else 1.0),
+            "failure_rate": failure_rate if has_error_rules else (0.0 if exit_code == 0 else 1.0),
             "request_count": n,
             "tps_or_rps": n / exec_sec if exec_sec > 0 else 0.0,
             "execution_time": exec_sec,

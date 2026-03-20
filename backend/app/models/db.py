@@ -38,11 +38,17 @@ class PerformanceTest(Base):
     request_delay: Mapped[float | None] = mapped_column(Float, nullable=True)
     ramp_up: Mapped[int] = mapped_column(Integer, nullable=False, default=0)  # seconds, 0 = no ramp
     iterations: Mapped[int | None] = mapped_column(Integer, nullable=True)  # total iterations; null = duration mode
-    body_preview_size: Mapped[int] = mapped_column(Integer, nullable=False, default=500)  # 응답 본문 미리보기 글자 수
+    body_preview_size: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=500
+    )  # 결과 화면에서 응답 본문을 잘라 보여줄 글자 수(저장 길이와 무관)
     vu_url_suffix: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)  # 경로 끝에 {{VU}} 붙이기
-    # 요청 URL 또는 응답 본문 판별: error_page_pattern 문자열 기준. match_mode: contains=포함 시 실패, not_contains=미포함 시 실패
-    error_page_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)
+    vu_start: Mapped[int] = mapped_column(Integer, nullable=False, default=1)  # {{VU}} 치환 시 첫 VU(__VU=1)에 넣을 값
+    # 요청 URL 또는 응답 본문 판별. error_page_rules: JSON [{"pattern":"...","matchMode":"contains"|"not_contains"},...] (하나라도 실패 조건이면 실패)
+    error_page_rules: Mapped[str | None] = mapped_column(Text, nullable=True)
+    error_page_pattern: Mapped[str | None] = mapped_column(Text, nullable=True)  # 첫 규칙과 동기화(레거시/API 호환)
     error_page_match_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="contains")
+    # k6 전용: JSON 배열(단계). 비우면 단일 요청 모드(target_url 등).
+    http_scenario: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
@@ -86,7 +92,8 @@ class TestResult(Base):
     )
     avg_response_time: Mapped[float] = mapped_column(Float, nullable=False)
     max_response_time: Mapped[float] = mapped_column(Float, nullable=False)
-    failure_rate: Mapped[float] = mapped_column(Float, nullable=False)
+    failure_rate: Mapped[float] = mapped_column(Float, nullable=False)  # k6 http_req_failed 등 HTTP 관점
+    overall_failure_rate: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)  # 행 기준 HTTP 비-2xx 또는 failed
     request_count: Mapped[int] = mapped_column(Integer, nullable=False)
     tps_or_rps: Mapped[float] = mapped_column(Float, nullable=False)
     execution_time: Mapped[float] = mapped_column(Float, nullable=False)  # seconds
@@ -112,7 +119,7 @@ class RunRequestResponse(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)  # 1-based order
     status_code: Mapped[int | None] = mapped_column(Integer, nullable=True)
     response_time_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
-    body_preview: Mapped[str | None] = mapped_column(Text, nullable=True)  # max 500 chars
+    body_preview: Mapped[str | None] = mapped_column(Text, nullable=True)  # HTTP: 응답 본문 전체, browser: innerText
     requested_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)  # 요청 시각
     request_args: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: url, method, headers, body (해당 요청 기준)
     screenshot: Mapped[bytes | None] = mapped_column(LargeBinary, nullable=True)  # 브라우저 Run VU별 PNG

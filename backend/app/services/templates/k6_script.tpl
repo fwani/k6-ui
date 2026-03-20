@@ -16,21 +16,30 @@ export default function () {
   const requestedAt = iso.replace(/(\.\d+)Z$/i, (_, frac) => (frac + '000000').slice(0, 7) + 'Z');
 {% endraw %}
 {{ call_js }}
-{% if error_page_pattern_js %}
-  const ERROR_PATTERN = {{ error_page_pattern_js }};
-  const ERROR_MATCH_NOT_CONTAINS = {{ 'true' if error_page_match_mode == 'not_contains' else 'false' }};
+{% if error_rules_js %}
+  const ERROR_PAGE_RULES = {{ error_rules_js }};
+  function __errorPageRuleFailed(_urlStr, _bodyStr, rules) {
+    if (!rules || !rules.length) return false;
+    for (let i = 0; i < rules.length; i++) {
+      const p = rules[i].pattern;
+      if (!p) continue;
+      const notContains = rules[i].matchMode === 'not_contains';
+      const found = _urlStr.indexOf(p) !== -1 || _bodyStr.indexOf(p) !== -1;
+      if (notContains ? !found : found) return true;
+    }
+    return false;
+  }
   const _urlStr = (res && res.url != null ? String(res.url) : '') || (typeof url !== 'undefined' ? String(url) : '');
   const _bodyStr = res && res.body != null ? String(res.body) : '';
-  const _found = ERROR_PATTERN && (_urlStr.indexOf(ERROR_PATTERN) !== -1 || _bodyStr.indexOf(ERROR_PATTERN) !== -1);
-  check(res, { 'no error page': () => !ERROR_PATTERN || (ERROR_MATCH_NOT_CONTAINS ? _found : !_found) });
-  var errorPageFailed = !!(ERROR_PATTERN && (ERROR_MATCH_NOT_CONTAINS ? !_found : _found));
+  var errorPageFailed = __errorPageRuleFailed(_urlStr, _bodyStr, ERROR_PAGE_RULES);
+  check(res, { 'no error page': () => !__errorPageRuleFailed(_urlStr, _bodyStr, ERROR_PAGE_RULES) });
 {% else %}
   var errorPageFailed = false;
 {% endif %}{% raw %}  check(res, { 'status 2xx': (r) => r != null && r.status >= 200 && r.status < 300 });
-  const bodyPreview = (res && res.body != null) ? String(res.body).substring(0, {% endraw %}{{ body_preview_size }}{% raw %}) : '';
+  const bodyFull = (res && res.body != null) ? String(res.body) : '';
   const duration = (res && res.timings && typeof res.timings.duration === 'number') ? res.timings.duration : null;
   const status = (res != null && res.status != null) ? (typeof res.status === 'number' ? res.status : parseInt(res.status, 10)) : null;
-  console.log('__REQ__' + JSON.stringify({ status: status, duration: duration, body: bodyPreview, requestedAt: requestedAt, requestArgs: requestArgs, failed: errorPageFailed }) + '__REQEND__');
+  console.log('__REQ__' + JSON.stringify({ vu: (typeof vu !== 'undefined' ? vu : __VU), scenarioIter: __ITER, status: status, duration: duration, body: bodyFull, requestedAt: requestedAt, requestArgs: requestArgs, failed: errorPageFailed }) + '__REQEND__');
   sleep({% endraw %}{{ sleep_s }}{% raw %});
 }
 

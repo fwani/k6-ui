@@ -47,6 +47,7 @@
 import { ref, computed, onMounted, onUnmounted, watch, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
 import { get, post, getApiErrorMessage } from '../services/api'
+import { getRunHeaderOverridesForApi } from '../services/runHeaders'
 
 const route = useRoute()
 const isRunDetail = computed(() => route.name === 'run-detail' && route.params.id)
@@ -111,7 +112,9 @@ async function startRun() {
   starting.value = true
   apiError.value = ''
   try {
-    const res = await post(`tests/${testId.value}/runs`, {})
+    const o = getRunHeaderOverridesForApi()
+    const payload = Object.keys(o).length > 0 ? { requestHeaderOverrides: o } : {}
+    const res = await post(`tests/${testId.value}/runs`, payload)
     runId.value = res.id
     run.value = res
   } catch (err) {

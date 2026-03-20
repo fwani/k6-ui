@@ -63,7 +63,8 @@
             <td>{{ formatDate(r.finishedAt) }}</td>
             <td class="text-medium-emphasis text-body-2">
               <template v-if="r.resultSummary">
-                평균 {{ formatMs(r.resultSummary.avgResponseTime) }} / 실패율 {{ formatPercent(r.resultSummary.failureRate) }}
+                평균 {{ formatMs(r.resultSummary.avgResponseTime) }} / 종합
+                {{ formatPercent(r.resultSummary.overallFailureRate ?? 0) }}
               </template>
               <span v-else>—</span>
             </td>

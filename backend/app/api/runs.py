@@ -8,7 +8,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.api.schemas.result import ResultResponse
+from app.api.schemas.result import ResultResponse, StepSummaryResponse
 from app.api.schemas.run import (
     ResultSummaryResponse,
     RunResponse,
@@ -26,11 +26,31 @@ from app.services import (
     run_request_repository,
     test_repository,
 )
+from app.services.run_request_repository import normalize_requests_sort
 from app.services.browser_runner import BrowserNotFoundError
 from app.services.k6_runner import K6NotFoundError
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["runs"])
+
+
+def _compute_overall_failure_rate(
+    request_responses: list[dict] | None,
+    http_failure_rate: float,
+) -> float:
+    """저장 예정 요청 행 기준 종합 실패율. 행이 없으면 k6 HTTP 실패율로 폴백."""
+    rows = request_responses or []
+    if not rows:
+        return float(http_failure_rate)
+    n = len(rows)
+    bad = 0
+    for r in rows:
+        sc = r.get("status_code")
+        rule_failed = bool(r.get("failed"))
+        http_bad = sc is None or sc < 200 or sc >= 300
+        if rule_failed or http_bad:
+            bad += 1
+    return (bad / n) if n else float(http_failure_rate)
 
 
 def _to_response(orm: TestRun) -> dict:
@@ -62,12 +82,15 @@ def _on_run_complete(
             if status == "Failed" and not err_msg:
                 err_msg = f"프로세스가 비정상 종료했습니다 (exit code: {exit_code}). 사용자 중지 또는 k6 오류일 수 있습니다."
             if summary:
+                http_fr = float(summary["failure_rate"])
+                overall_fr = _compute_overall_failure_rate(request_responses, http_fr)
                 result_repository.create(
                     db,
                     run_id=run_id,
                     avg_response_time=summary["avg_response_time"],
                     max_response_time=summary["max_response_time"],
-                    failure_rate=summary["failure_rate"],
+                    failure_rate=http_fr,
+                    overall_failure_rate=overall_fr,
                     request_count=summary["request_count"],
                     tps_or_rps=summary["tps_or_rps"],
                     execution_time=summary["execution_time"],
@@ -84,6 +107,7 @@ def _on_run_complete(
                     avg_response_time=0.0,
                     max_response_time=0.0,
                     failure_rate=0.0,
+                    overall_failure_rate=0.0,
                     request_count=0,
                     tps_or_rps=0.0,
                     execution_time=exec_sec,
@@ -125,11 +149,17 @@ def start_run(
             db, run, status="Failed", finished_at=datetime.utcnow()
         )
         raise HTTPException(status_code=404, detail="테스트를 찾을 수 없습니다.")
+    start_body = body if body is not None else StartRunRequest()
+    hdr_over = start_body.request_header_overrides or {}
     try:
         if engine == "browser":
-            browser_runner.start(run.id, test, on_complete=_on_run_complete)
+            browser_runner.start(
+                run.id, test, on_complete=_on_run_complete, request_header_overrides=hdr_over
+            )
         else:
-            k6_runner.start(run.id, test, on_complete=_on_run_complete)
+            k6_runner.start(
+                run.id, test, on_complete=_on_run_complete, request_header_overrides=hdr_over
+            )
     except (K6NotFoundError, BrowserNotFoundError) as e:
         run_repository.update_status(
             db, run, status="Failed", finished_at=datetime.utcnow()
@@ -172,6 +202,7 @@ def list_runs(
             result_summary = ResultSummaryResponse(
                 avg_response_time=r.result.avg_response_time,
                 failure_rate=r.result.failure_rate,
+                overall_failure_rate=r.result.overall_failure_rate,
             )
         items.append(
             RunSummaryResponse(
@@ -235,12 +266,17 @@ def get_run_requests(
     db: Session = Depends(get_db),
     limit: int = 1000,
     offset: int = 0,
+    sort: str | None = None,
 ):
-    """GET /runs/:runId/requests. 요청별 응답 목록(페이지네이션)."""
+    """GET /runs/:runId/requests. 요청별 응답 목록(페이지네이션). sort=vuTrace 시 VU·반복·스텝 순(SQLite)."""
     run = run_repository.get(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다.")
-    items, total = run_request_repository.get_by_run_id(db, run_id=run_id, limit=limit, offset=offset)
+    effective_sort = (sort or "").strip() or "vuTrace"
+    sort_key = normalize_requests_sort(effective_sort)
+    items, total = run_request_repository.get_by_run_id(
+        db, run_id=run_id, limit=limit, offset=offset, sort=sort_key
+    )
     return {
         "items": [RunRequestResponseResponse.model_validate(x).model_dump(by_alias=True) for x in items],
         "total": total,
@@ -250,14 +286,36 @@ def get_run_requests(
 @router.get("/runs/{run_id}/result", response_model=dict)
 def get_run_result(run_id: str, db: Session = Depends(get_db)):
     """GET /runs/:runId/result. 404 if run or result not found."""
-    run = run_repository.get(db, run_id)
+    run = run_repository.get_with_test(db, run_id)
     if not run:
         raise HTTPException(status_code=404, detail="실행을 찾을 수 없습니다.")
     result = result_repository.get_by_run_id(db, run_id)
     if not result:
         raise HTTPException(status_code=404, detail="결과가 아직 없습니다.")
     logger.info("result_read run_id=%s", run_id)
-    return ResultResponse.model_validate(result).model_dump(by_alias=True)
+    step_summaries: list[StepSummaryResponse] = []
+    exec_sec = float(getattr(result, "execution_time", 0) or 0)
+    try:
+        for row in run_request_repository.aggregate_step_metrics(db, run_id):
+            n = int(row.get("request_count", 0))
+            tps = (n / exec_sec) if exec_sec > 0 and n > 0 else 0.0
+            step_summaries.append(
+                StepSummaryResponse.model_validate({**row, "tps_or_rps": tps})
+            )
+    except Exception:
+        logger.exception("step_summaries aggregation failed run_id=%s", run_id)
+        step_summaries = []
+    out = (
+        ResultResponse.model_validate(result)
+        .model_copy(update={"step_summaries": step_summaries})
+        .model_dump(by_alias=True)
+    )
+    if run.test is not None:
+        bps = int(getattr(run.test, "body_preview_size", 500) or 500)
+        out["bodyPreviewSize"] = max(0, min(10000, bps))
+    else:
+        out["bodyPreviewSize"] = 500
+    return out
 
 
 _UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

@@ -1,8 +1,9 @@
 """Pydantic 스키마: Run 요청/응답. API는 camelCase."""
 
 from datetime import datetime
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class StartRunRequest(BaseModel):
@@ -11,6 +12,26 @@ class StartRunRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     engine: str = Field("http", alias="engine")  # http | browser
+    request_header_overrides: dict[str, str] | None = Field(
+        None,
+        alias="requestHeaderOverrides",
+        description="실행 시에만 대상 요청 헤더에 합침. 테스트 저장 헤더보다 우선.",
+    )
+
+    @field_validator("request_header_overrides", mode="before")
+    @classmethod
+    def coerce_request_header_overrides(cls, v: Any) -> dict[str, str] | None:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            return None
+        out: dict[str, str] = {}
+        for k, val in v.items():
+            key = str(k).strip()
+            if not key:
+                continue
+            out[key] = "" if val is None else str(val)
+        return out or None
 
 
 class ResultSummaryResponse(BaseModel):
@@ -20,6 +41,7 @@ class ResultSummaryResponse(BaseModel):
 
     avg_response_time: float = Field(alias="avgResponseTime")
     failure_rate: float = Field(alias="failureRate")
+    overall_failure_rate: float = Field(alias="overallFailureRate")
 
 
 class RunSummaryResponse(BaseModel):

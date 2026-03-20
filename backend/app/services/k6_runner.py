@@ -17,11 +17,13 @@ logger = logging.getLogger(__name__)
 _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 _JINJA_ENV = Environment(loader=FileSystemLoader(_TEMPLATES_DIR), autoescape=False)
 _K6_SCRIPT_TEMPLATE = _JINJA_ENV.get_template("k6_script.tpl")
+_K6_SCENARIO_TEMPLATE = _JINJA_ENV.get_template("k6_scenario_script.tpl")
 
 VU_PLACEHOLDER = "{{VU}}"
 
 from app.config import INFLUXDB_URL
 from app.models.db import PerformanceTest
+from app.services.error_page_rules import parse_error_rules_from_test
 
 
 class K6NotFoundError(Exception):
@@ -43,6 +45,27 @@ def _parse_headers(headers: str | None) -> dict[str, str]:
         return {str(k): str(v) for k, v in d.items()} if isinstance(d, dict) else {}
     except (json.JSONDecodeError, TypeError):
         return {}
+
+
+def _normalize_run_header_overrides(overrides: dict[str, str] | None) -> dict[str, str]:
+    if not overrides:
+        return {}
+    out: dict[str, str] = {}
+    for k, v in overrides.items():
+        key = str(k).strip()
+        if not key:
+            continue
+        out[key] = "" if v is None else str(v)
+    return out
+
+
+def _merge_http_headers(base: dict[str, str], overrides: dict[str, str]) -> dict[str, str]:
+    """테스트 정의 헤더 + 실행 시 헤더. 동일 키는 overrides 우선."""
+    if not overrides:
+        return dict(base)
+    merged = dict(base)
+    merged.update(overrides)
+    return merged
 
 
 def _contains_vu_placeholder(s: str) -> bool:
@@ -90,6 +113,15 @@ def _build_url_with_params(base: str, query_params: str | None) -> str:
         return base
 
 
+def _vu_start_from_test(test: PerformanceTest) -> int:
+    """{{VU}}에 쓰는 첫 VU 값 (__VU==1일 때)."""
+    try:
+        n = int(getattr(test, "vu_start", 1) or 1)
+    except (TypeError, ValueError):
+        return 1
+    return max(1, n)
+
+
 def _replace_vu_placeholder(s: str, vu: str = "1") -> str:
     """문자열 내 {{VU}}를 주어진 값으로 치환. per-VU 결과 저장 시 대표값용."""
     if s is None:
@@ -97,9 +129,187 @@ def _replace_vu_placeholder(s: str, vu: str = "1") -> str:
     return str(s).replace(VU_PLACEHOLDER, vu)
 
 
-def get_request_args_json(test: PerformanceTest) -> str | None:
-    """테스트에서 요청 인자(url, method, headers, body)를 JSON 문자열로 반환. 결과 저장용. per-VU일 때는 {{VU}}→1 대표값."""
+def _load_scenario_steps(test: PerformanceTest) -> list | None:
+    """http_scenario JSON 배열 파싱. 비어 있거나 없으면 None."""
+    raw = getattr(test, "http_scenario", None)
+    if not raw or not str(raw).strip():
+        return None
     try:
+        data = json.loads(raw)
+        if not isinstance(data, list) or len(data) == 0:
+            return None
+        return data
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+
+def _parse_step_query_params(raw_qp: object) -> list:
+    if raw_qp is None:
+        return []
+    if isinstance(raw_qp, list):
+        return raw_qp
+    if isinstance(raw_qp, str) and raw_qp.strip():
+        try:
+            arr = json.loads(raw_qp)
+            return arr if isinstance(arr, list) else []
+        except (json.JSONDecodeError, TypeError):
+            return []
+    return []
+
+
+def _steps_payload_need_per_vu(steps_payload: list[dict]) -> bool:
+    for s in steps_payload:
+        if _contains_vu_placeholder(s.get("urlTemplate")):
+            return True
+        if _contains_vu_placeholder(s.get("bodyTemplate")):
+            return True
+        for v in (s.get("headers") or {}).values():
+            if _contains_vu_placeholder(str(v)):
+                return True
+        for item in s.get("queryParams") or []:
+            if isinstance(item, dict) and _contains_vu_placeholder(str(item.get("value", ""))):
+                return True
+    return False
+
+
+def _build_k6_scenario_step_payloads(test: PerformanceTest) -> tuple[list[dict], bool] | None:
+    """시나리오가 있으면 k6 STEPS 배열과 per-VU 필요 여부. 없으면 None."""
+    raw_list = _load_scenario_steps(test)
+    if not raw_list:
+        return None
+    vu_suf = bool(getattr(test, "vu_url_suffix", False))
+    out: list[dict] = []
+    for i, raw in enumerate(raw_list):
+        if not isinstance(raw, dict):
+            continue
+        url = (raw.get("url") or "").strip()
+        if not url:
+            continue
+        if vu_suf and VU_PLACEHOLDER not in url:
+            url = _url_with_vu_suffix(url)
+        method = (raw.get("method") or "GET").upper()
+        qp = _parse_step_query_params(raw.get("queryParams"))
+        if not qp:
+            qp = _parse_step_query_params(raw.get("query_params"))
+        headers = raw.get("headers")
+        if not isinstance(headers, dict):
+            headers = {}
+        headers = {str(k): "" if v is None else str(v) for k, v in headers.items()}
+        body = raw.get("body")
+        body = "" if body is None else str(body)
+        name = raw.get("name")
+        name = f"step_{i + 1}" if not (name and str(name).strip()) else str(name).strip()
+        cap_raw = raw.get("capture")
+        capture = None
+        if isinstance(cap_raw, dict) and cap_raw.get("var"):
+            v_cap = str(cap_raw["var"]).strip()
+            if v_cap:
+                src = (cap_raw.get("from") or "json").strip().lower()
+                if src == "header":
+                    hn = cap_raw.get("header")
+                    if hn and str(hn).strip():
+                        capture = {
+                            "from": "header",
+                            "header": str(hn).strip(),
+                            "var": v_cap,
+                        }
+                        cn = cap_raw.get("cookieName") or cap_raw.get("cookie_name")
+                        if cn and str(cn).strip():
+                            capture["cookieName"] = str(cn).strip()
+                elif cap_raw.get("path") and str(cap_raw.get("path")).strip():
+                    capture = {
+                        "from": "json",
+                        "path": str(cap_raw["path"]).strip(),
+                        "var": v_cap,
+                    }
+        entry: dict = {
+            "name": name,
+            "method": method,
+            "urlTemplate": url,
+            "queryParams": qp,
+            "headers": headers,
+            "bodyTemplate": body,
+            "capture": capture,
+        }
+        sas = raw.get("sleepAfterSeconds")
+        if sas is None:
+            sas = raw.get("sleep_after_seconds")
+        if sas is not None:
+            try:
+                sf = float(sas)
+                if 0 < sf <= 600:
+                    entry["sleepAfterSeconds"] = sf
+            except (TypeError, ValueError):
+                pass
+        out.append(entry)
+    if not out:
+        return None
+    per_vu = _steps_payload_need_per_vu(out)
+    return out, per_vu
+
+
+def _build_options_js(test: PerformanceTest) -> str:
+    vus = max(1, int(getattr(test, "vus", 1) or 1))
+    duration_s = max(1, int(getattr(test, "duration", 10) or 10))
+    ramp_up = max(0, int(getattr(test, "ramp_up", 0) or 0))
+    iterations = getattr(test, "iterations", None)
+    if iterations is not None:
+        iterations = max(1, int(iterations))
+        total_iterations = iterations * vus
+        return f"  vus: {vus},\n  iterations: {total_iterations},\n"
+    if ramp_up > 0:
+        return f"""  stages: [
+    {{ duration: '{ramp_up}s', target: {vus} }},
+    {{ duration: '{duration_s}s', target: {vus} }},
+  ],
+"""
+    return f"  vus: {vus},\n  duration: '{duration_s}s',\n"
+
+
+def _render_scenario_script(
+    test: PerformanceTest,
+    steps_payload: list[dict],
+    *,
+    options_js: str,
+    sleep_s: float,
+    error_rules_js: str | None,
+) -> str:
+    steps_json = json.dumps(steps_payload, ensure_ascii=False)
+    vu_offset = _vu_start_from_test(test) - 1
+    ctx = {
+        "steps_json": steps_json,
+        "options_js": options_js,
+        "placeholder_js": json.dumps(VU_PLACEHOLDER),
+        "sleep_s": sleep_s,
+        "error_rules_js": error_rules_js,
+        "vu_offset": vu_offset,
+    }
+    return _K6_SCENARIO_TEMPLATE.render(**ctx)
+
+
+def get_request_args_json(test: PerformanceTest) -> str | None:
+    """테스트에서 요청 인자(url, method, headers, body)를 JSON 문자열로 반환. 결과 저장용. per-VU일 때는 {{VU}}→vu_start 대표값."""
+    try:
+        vu_rep = str(_vu_start_from_test(test))
+        built = _build_k6_scenario_step_payloads(test)
+        if built:
+            steps, per_vu = built
+            s0 = steps[0]
+            method = s0["method"]
+            qp_json = json.dumps(s0.get("queryParams") or []) if s0.get("queryParams") else None
+            url = _build_url_with_params(s0["urlTemplate"], qp_json)
+            if per_vu:
+                url = _replace_vu_placeholder(url, vu_rep)
+            body = s0["bodyTemplate"]
+            if per_vu:
+                body = _replace_vu_placeholder(body, vu_rep)
+            headers = dict(s0["headers"])
+            if per_vu:
+                headers = {k: _replace_vu_placeholder(v, vu_rep) for k, v in headers.items()}
+            return json.dumps(
+                {"url": url, "method": method, "headers": headers, "body": body},
+                ensure_ascii=False,
+            )
         method = (getattr(test, "http_method", None) or "GET").upper()
         base_url = (getattr(test, "target_url", None) or "").strip() or "https://httpbin.org/get"
         query_params = getattr(test, "query_params", None)
@@ -108,17 +318,17 @@ def get_request_args_json(test: PerformanceTest) -> str | None:
             base_url = _url_with_vu_suffix(base_url)
         url = _build_url_with_params(base_url, query_params)
         if _needs_per_vu(test):
-            url = _replace_vu_placeholder(url)
+            url = _replace_vu_placeholder(url, vu_rep)
         body = getattr(test, "request_body", None) or ""
         if body is not None:
             body = str(body).strip()
         else:
             body = ""
         if _needs_per_vu(test):
-            body = _replace_vu_placeholder(body)
+            body = _replace_vu_placeholder(body, vu_rep)
         headers = _parse_headers(getattr(test, "headers", None))
         if _needs_per_vu(test):
-            headers = {k: _replace_vu_placeholder(v) for k, v in headers.items()}
+            headers = {k: _replace_vu_placeholder(v, vu_rep) for k, v in headers.items()}
         return json.dumps(
             {"url": url, "method": method, "headers": headers, "body": body},
             ensure_ascii=False,
@@ -129,6 +339,10 @@ def get_request_args_json(test: PerformanceTest) -> str | None:
 
 def _needs_per_vu(test: PerformanceTest) -> bool:
     """테스트가 VU별 변형({{VU}} 또는 vu_url_suffix)을 사용하는지."""
+    built = _build_k6_scenario_step_payloads(test)
+    if built is not None:
+        _, per_vu = built
+        return per_vu
     if getattr(test, "vu_url_suffix", False):
         return True
     base_url = (getattr(test, "target_url", None) or "").strip()
@@ -154,8 +368,37 @@ def _needs_per_vu(test: PerformanceTest) -> bool:
     return False
 
 
-def generate_script(test: PerformanceTest) -> str:
+def generate_script(
+    test: PerformanceTest,
+    request_header_overrides: dict[str, str] | None = None,
+) -> str:
     """테스트 파라미터로 k6 JS 스크립트 생성. handleSummary는 stdout으로 JSON 출력."""
+    rd = getattr(test, "request_delay", None)
+    sleep_s = float(rd) if rd is not None and float(rd) >= 0 else 1
+    rules = parse_error_rules_from_test(test)
+    error_rules_js = json.dumps(rules, ensure_ascii=False) if rules else None
+    options_js = _build_options_js(test)
+    hdr_ov = _normalize_run_header_overrides(request_header_overrides)
+
+    scenario = _build_k6_scenario_step_payloads(test)
+    if scenario:
+        steps_payload, _ = scenario
+        if hdr_ov:
+            steps_payload = [
+                {
+                    **step,
+                    "headers": _merge_http_headers(step.get("headers") or {}, hdr_ov),
+                }
+                for step in steps_payload
+            ]
+        return _render_scenario_script(
+            test,
+            steps_payload,
+            options_js=options_js,
+            sleep_s=sleep_s,
+            error_rules_js=error_rules_js,
+        )
+
     method = (getattr(test, "http_method", None) or "GET").upper()
     base_url = (getattr(test, "target_url", None) or "").strip() or "https://httpbin.org/get"
     query_params = getattr(test, "query_params", None)
@@ -164,19 +407,9 @@ def generate_script(test: PerformanceTest) -> str:
     headers = _parse_headers(getattr(test, "headers", None))
     if "Content-Type" not in headers and method in ("POST", "PUT", "PATCH"):
         headers["Content-Type"] = "application/json"
-    vus = max(1, int(getattr(test, "vus", 1) or 1))
-    duration_s = max(1, int(getattr(test, "duration", 10) or 10))
-    ramp_up = max(0, int(getattr(test, "ramp_up", 0) or 0))
-    iterations = getattr(test, "iterations", None)
-    if iterations is not None:
-        iterations = max(1, int(iterations))
-    rd = getattr(test, "request_delay", None)
-    sleep_s = float(rd) if rd is not None and float(rd) >= 0 else 1
-    body_preview_size = max(0, min(10000, int(getattr(test, "body_preview_size", 500) or 500)))
+    if hdr_ov:
+        headers = _merge_http_headers(headers, hdr_ov)
     vu_url_suffix = bool(getattr(test, "vu_url_suffix", False))
-    error_page_pattern = (getattr(test, "error_page_pattern", None) or "").strip()
-    error_page_pattern_js = json.dumps(error_page_pattern) if error_page_pattern else None
-    error_page_match_mode = (getattr(test, "error_page_match_mode", None) or "contains").strip() or "contains"
 
     per_vu = _needs_per_vu(test)
     if per_vu:
@@ -189,9 +422,10 @@ def generate_script(test: PerformanceTest) -> str:
         headers_js = json.dumps(headers) if headers else "{}"
         body_template_js = json.dumps(body)
         method_js = json.dumps(method)
-        # default function 안에서 __VU로 치환 후 요청
+        # default function 안에서 __VU + 오프셋으로 치환 후 요청
         placeholder_js = json.dumps(VU_PLACEHOLDER)
-        call_js = f"""  const vu = __VU;
+        vu_off = _vu_start_from_test(test) - 1
+        call_js = f"""  const vu = __VU + {vu_off};
   const replaceVu = (s) => (s == null ? '' : String(s).split({placeholder_js}).join(vu));
   const url = replaceVu(URL_TEMPLATE);
   const headersObj = {{}};
@@ -220,31 +454,16 @@ def generate_script(test: PerformanceTest) -> str:
     : http.request(method, url, body, {{ headers }});
   const requestArgs = {{ url, method, headers, body }};"""
 
-    # 웹: 반복 횟수 = 사용자당 횟수. k6: iterations = 총 횟수이므로 반복횟수 * vus (iterations >= vus 필요)
-    if iterations is not None:
-        total_iterations = iterations * vus
-        options_js = f"  vus: {vus},\n  iterations: {total_iterations},\n"
-    elif ramp_up > 0:
-        options_js = f"""  stages: [
-    {{ duration: '{ramp_up}s', target: {vus} }},
-    {{ duration: '{duration_s}s', target: {vus} }},
-  ],
-"""
-    else:
-        options_js = f"  vus: {vus},\n  duration: '{duration_s}s',\n"
-
     ctx = {
         "per_vu": per_vu,
         "options_js": options_js,
         "call_js": call_js,
-        "body_preview_size": body_preview_size,
         "sleep_s": sleep_s,
         "url_template_js": url_template_js if per_vu else "",
         "headers_js": headers_js if per_vu else "{}",
         "body_template_js": body_template_js if per_vu else '""',
         "method_js": method_js if per_vu else '""',
-        "error_page_pattern_js": error_page_pattern_js,
-        "error_page_match_mode": error_page_match_mode,
+        "error_rules_js": error_rules_js,
     }
     return _K6_SCRIPT_TEMPLATE.render(**ctx)
 
@@ -340,8 +559,19 @@ def _parse_one_req_obj(obj: dict) -> dict | None:
                 pass
         request_args = None
         ra = obj.get("requestArgs") or obj.get("request_args")
+        merged: dict = {}
         if ra is not None and isinstance(ra, dict):
-            request_args = json.dumps(ra, ensure_ascii=False)
+            merged.update(ra)
+        vu_top = obj.get("vu")
+        if vu_top is not None:
+            merged["vu"] = vu_top
+        sit = obj.get("scenarioIter")
+        if sit is None:
+            sit = obj.get("iter")
+        if sit is not None:
+            merged["scenarioIter"] = sit
+        if merged:
+            request_args = json.dumps(merged, ensure_ascii=False)
         failed = obj.get("failed")
         if failed is not None and not isinstance(failed, bool):
             failed = bool(failed)
@@ -422,9 +652,10 @@ def start(
     run_id: str,
     test: PerformanceTest,
     on_complete: Callable[[str, int, dict | None, str | None], None] | None = None,
+    request_header_overrides: dict[str, str] | None = None,
 ) -> None:
     """백그라운드에서 k6 실행. 스크립트는 stdin으로 전달(k6 run -). stdout/stderr는 스레드로 읽어 로그 버퍼에 적재, 요약은 누적 stdout에서 파싱."""
-    script = generate_script(test)
+    script = generate_script(test, request_header_overrides=request_header_overrides)
     script_bytes = script.encode("utf-8")
 
     with _processes_lock:

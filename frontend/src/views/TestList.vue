@@ -16,6 +16,88 @@
         <v-btn color="primary" to="/tests/new" prepend-icon="mdi-plus" size="small">새 테스트</v-btn>
       </div>
     </div>
+    <v-expansion-panels class="mb-3" variant="accordion">
+      <v-expansion-panel>
+        <v-expansion-panel-title class="text-body-2">
+          다음 실행에 붙일 헤더 (인증·Cookie 등)
+        </v-expansion-panel-title>
+        <v-expansion-panel-text>
+          <p class="text-caption text-medium-emphasis mb-2">
+            브라우저에만 저장되며 테스트 정의에는 올라가지 않습니다. 실행 시 테스트에 저장된 Headers와 합쳐지고, 같은 이름은 여기 값이 우선합니다.
+          </p>
+          <v-sheet border rounded class="pa-3 mb-3 text-caption text-medium-emphasis">
+            <p class="mb-2 font-weight-medium text-high-emphasis">필드 설명 (부하가 치는 <strong>대상 API</strong> 요청에 붙습니다)</p>
+            <ul class="pl-4 mb-0" style="list-style: disc; line-height: 1.5">
+              <li class="mb-1">
+                <strong>Bearer 토큰</strong>: OAuth/JWT 등 <strong>액세스 토큰 문자열만</strong> 입력합니다.
+                앞에 <code class="code-chip">Bearer</code> 를 붙이지 않아도 되며, 실행 시 <code class="code-chip">Authorization: Bearer …</code> 로 자동 조합됩니다.
+                이미 <code class="code-chip">Bearer xxx</code> 형태면 그대로 둬도 됩니다.
+              </li>
+              <li class="mb-1">
+                <strong>헤더 이름</strong>: HTTP 요청 헤더의 <strong>키</strong>입니다. 예:
+                <code class="code-chip">Cookie</code>,
+                <code class="code-chip">X-Api-Key</code>,
+                <code class="code-chip">Authorization</code>(Bearer 칸 대신 직접 넣을 때).
+              </li>
+              <li>
+                <strong>값</strong>: 위 이름에 대응하는 <strong>헤더 전체 값</strong>입니다.
+                세션 쿠키는 개발자 도구 등에서 복사한 쿠키 문자열을 넣고, 이름에 <code class="code-chip">Cookie</code> 를 적습니다.
+              </li>
+            </ul>
+          </v-sheet>
+          <v-text-field
+            v-model="runHdr.bearer"
+            label="Bearer 토큰 (선택)"
+            type="password"
+            autocomplete="off"
+            density="compact"
+            hide-details="auto"
+            class="mb-1"
+          />
+          <p class="text-caption text-medium-emphasis mb-3">비우면 이 칸은 사용하지 않습니다.</p>
+          <div v-for="(row, i) in runHdr.extras" :key="i" class="d-flex flex-wrap align-center gap-2 mb-2">
+            <v-text-field
+              v-model="row.key"
+              label="헤더 이름"
+              placeholder="Cookie, X-Api-Key …"
+              density="compact"
+              hide-details="auto"
+              class="flex-grow-1"
+              style="min-width: 140px"
+            />
+            <v-text-field
+              v-model="row.value"
+              label="값"
+              placeholder="헤더에 실릴 문자열 전체"
+              density="compact"
+              hide-details="auto"
+              class="flex-grow-1"
+              style="min-width: 160px"
+            />
+            <v-btn
+              icon="mdi-delete-outline"
+              variant="text"
+              size="small"
+              :disabled="runHdr.extras.length <= 1"
+              aria-label="행 삭제"
+              @click="removeExtraRow(i)"
+            />
+          </div>
+          <v-btn size="small" variant="text" class="mb-2" @click="addExtraRow">헤더 행 추가</v-btn>
+          <v-checkbox
+            v-model="runHdr.persist"
+            label="이 브라우저에 기억 (localStorage)"
+            density="compact"
+            hide-details
+            class="mt-1"
+          />
+          <div class="d-flex flex-wrap gap-2 mt-2">
+            <v-btn size="small" color="primary" @click="saveRunHdr">저장</v-btn>
+            <v-btn size="small" variant="text" @click="clearRunHdr">모두 지우기</v-btn>
+          </div>
+        </v-expansion-panel-text>
+      </v-expansion-panel>
+    </v-expansion-panels>
     <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
     <v-alert v-else-if="error" type="error" closable density="compact" class="mb-2">{{ error }}</v-alert>
     <template v-else>
@@ -71,15 +153,57 @@
 </template>
 
 <script setup>
-import { ref, onMounted } from 'vue'
+import { ref, reactive, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { get, del, getApiErrorMessage } from '../services/api'
+import {
+  loadRunHeadersForm,
+  saveRunHeadersForm,
+  clearRunHeadersForm,
+} from '../services/runHeaders'
 
 const router = useRouter()
 const items = ref([])
 const selectedIds = ref([])
 const loading = ref(true)
 const error = ref('')
+
+const runHdr = reactive({
+  bearer: '',
+  extras: [{ key: '', value: '' }],
+  persist: false,
+})
+
+function applyLoadedRunHdr() {
+  const x = loadRunHeadersForm()
+  runHdr.bearer = x.bearer
+  runHdr.extras = x.extras.length ? x.extras.map((r) => ({ ...r })) : [{ key: '', value: '' }]
+  runHdr.persist = x.persist
+}
+
+function addExtraRow() {
+  runHdr.extras.push({ key: '', value: '' })
+}
+
+function removeExtraRow(i) {
+  if (runHdr.extras.length <= 1) return
+  runHdr.extras.splice(i, 1)
+}
+
+function saveRunHdr() {
+  saveRunHeadersForm({
+    bearer: runHdr.bearer,
+    extras: runHdr.extras.map((r) => ({ key: r.key, value: r.value })),
+    persist: runHdr.persist,
+  })
+}
+
+function clearRunHdr() {
+  clearRunHeadersForm()
+  runHdr.bearer = ''
+  runHdr.extras = [{ key: '', value: '' }]
+  runHdr.persist = false
+}
 
 function toggleSelect(id, checked) {
   if (checked) {
@@ -137,12 +261,22 @@ async function load() {
   }
 }
 
-onMounted(load)
+onMounted(() => {
+  applyLoadedRunHdr()
+  load()
+})
 </script>
 
 <style scoped>
 .compact-table :deep(th),
 .compact-table :deep(td) {
   padding: 4px 8px;
+}
+.code-chip {
+  font-size: 0.85em;
+  padding: 1px 5px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.07);
+  font-family: ui-monospace, monospace;
 }
 </style>

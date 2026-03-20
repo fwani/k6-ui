@@ -18,8 +18,15 @@
             <template #append>{{ formatMs(result.maxResponseTime) }}</template>
           </v-list-item>
           <v-list-item>
-            <v-list-item-title>실패율</v-list-item-title>
-            <v-list-item-subtitle>실패한 요청 비율 (0~1, 1 = 100%)</v-list-item-subtitle>
+            <v-list-item-title>종합 실패율</v-list-item-title>
+            <v-list-item-subtitle
+              >저장된 요청·페이지 로드 단위: HTTP 상태가 2xx가 아니거나, 에러 페이지 판별에 걸린 비율</v-list-item-subtitle
+            >
+            <template #append>{{ formatPercent(result.overallFailureRate ?? 0) }}</template>
+          </v-list-item>
+          <v-list-item>
+            <v-list-item-title>HTTP 실패율</v-list-item-title>
+            <v-list-item-subtitle>k6 기준 http_req_failed (연결·응답 상태). 200이어도 본문 판별 실패는 여기엔 안 잡힐 수 있음</v-list-item-subtitle>
             <template #append>{{ formatPercent(result.failureRate) }}</template>
           </v-list-item>
           <v-list-item>
@@ -38,6 +45,39 @@
             <template #append>{{ result.executionTime?.toFixed(1) ?? '-' }}초</template>
           </v-list-item>
         </v-list>
+      </v-sheet>
+      <v-sheet v-if="result.stepSummaries?.length > 0" class="pa-3 mb-2" rounded>
+        <h3 class="text-subtitle-1 mb-1">스텝별 요약</h3>
+        <p class="text-caption text-medium-emphasis mb-2">
+          시나리오 스텝(저장된 요청 행 기준 집계). 단일 요청 테스트는 표가 비어 있을 수 있음.
+          스텝 TPS/RPS는 해당 스텝 요청 수를 전체 실행 시간(초)으로 나눈 값으로, 상단 요약과 같은 시간 기준입니다.
+        </p>
+        <div class="request-table-wrap">
+          <table class="request-table">
+            <thead>
+              <tr>
+                <th>스텝</th>
+                <th>인덱스</th>
+                <th>건수</th>
+                <th>평균 응답</th>
+                <th>최대 응답</th>
+                <th>실패율</th>
+                <th>TPS/RPS</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in result.stepSummaries" :key="s.stepIndex">
+                <td>{{ s.stepName || '—' }}</td>
+                <td>{{ s.stepIndex }}</td>
+                <td>{{ s.requestCount }}</td>
+                <td>{{ formatMs(s.avgResponseTime) }}</td>
+                <td>{{ formatMs(s.maxResponseTime) }}</td>
+                <td>{{ formatPercent(s.failureRate) }}</td>
+                <td>{{ s.tpsOrRps != null ? Number(s.tpsOrRps).toFixed(2) : '—' }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
       </v-sheet>
       <v-sheet v-if="hasBrowserMetrics" class="pa-3 mb-2" rounded>
         <h3 class="text-subtitle-1 mb-1">렌더링 메트릭</h3>
@@ -114,22 +154,48 @@
               @update:model-value="loadRequests"
             />
           </div>
+          <div class="d-flex align-center flex-wrap gap-2 mb-2">
+            <v-select
+              v-model="requestSort"
+              :items="requestSortItems"
+              item-title="title"
+              item-value="value"
+              label="요청 목록 정렬"
+              density="compact"
+              hide-details
+              class="request-sort-select"
+              style="min-width: 200px"
+              @update:model-value="onRequestSortChange"
+            />
+          </div>
           <div class="request-table-wrap">
             <table class="request-table">
               <thead>
                 <tr>
                   <th>#</th>
+                  <th>VU</th>
+                  <th>반복</th>
+                  <th>단계</th>
                   <th v-if="showScreenshotColumn">스크린샷</th>
                   <th>요청 시각</th>
                   <th>상태</th>
                   <th>실패</th>
                   <th>응답 시간</th>
-                  <th>본문 미리보기</th>
+                  <th>응답 본문</th>
                 </tr>
               </thead>
               <tbody>
-                <tr v-for="row in requestItems" :key="row.seq" :class="{ 'row-failed': row.failed }">
+                <template v-for="(row, rIdx) in requestItems" :key="row.seq">
+                  <tr v-if="showTaskGroupHeader(rIdx)" class="task-group-sep">
+                    <td :colspan="requestTableColspan" class="task-group-sep-cell">
+                      {{ taskGroupHeaderLabel(rIdx) }}
+                    </td>
+                  </tr>
+                  <tr :class="requestRowClasses(row, rIdx)">
                   <td>{{ row.seq }}</td>
+                  <td>{{ traceCell(row.requestArgs).vu }}</td>
+                  <td>{{ traceCell(row.requestArgs).iter }}</td>
+                  <td class="step-cell">{{ traceCell(row.requestArgs).stepLabel }}</td>
                   <td v-if="showScreenshotColumn" class="screenshot-cell">
                     <div
                       v-if="hasScreenshotForRow(row) && !screenshotErrorSeqs.has(row.seq)"
@@ -164,6 +230,7 @@
                     <span v-else class="text-medium-emphasis">—</span>
                   </td>
                 </tr>
+                </template>
               </tbody>
             </table>
           </div>
@@ -223,6 +290,11 @@ const requestItems = ref([])
 const requestsTotal = ref(null)
 const requestPage = ref(1)
 const requestPageSize = ref(20)
+const requestSort = ref('vuTrace')
+const requestSortItems = [
+  { title: 'VU·반복·스텝 순', value: 'vuTrace' },
+  { title: '저장 순 (seq)', value: 'seq' },
+]
 const screenshotErrorSeqs = ref(new Set())
 const screenshotHover = ref({ url: '', seq: null, style: {} })
 const loading = ref(true)
@@ -236,6 +308,12 @@ const hasBrowserMetrics = computed(
       result.value.ttfbMs != null ||
       result.value.cls != null)
 )
+
+const bodyPreviewDisplayMax = computed(() => {
+  const n = result.value?.bodyPreviewSize
+  if (n == null || Number.isNaN(Number(n))) return 500
+  return Number(n)
+})
 
 const showScreenshotColumn = computed(
   () => hasBrowserMetrics.value && result.value && result.value.requestCount > 0
@@ -257,6 +335,30 @@ const requestStart = computed(() =>
 const requestEnd = computed(() =>
   Math.min(requestPage.value * requestPageSize.value, requestsTotal.value ?? 0)
 )
+
+const requestTableColspan = computed(() => 9 + (showScreenshotColumn.value ? 1 : 0))
+
+function taskGroupKeyFromRow(row) {
+  return requestTraceDisplay(row.requestArgs).groupKey
+}
+
+function showTaskGroupHeader(idx) {
+  if (requestSort.value !== 'vuTrace') return false
+  const items = requestItems.value
+  const row = items[idx]
+  if (!row) return false
+  const key = taskGroupKeyFromRow(row)
+  if (!key) return false
+  if (idx === 0) return true
+  return key !== taskGroupKeyFromRow(items[idx - 1])
+}
+
+function taskGroupHeaderLabel(idx) {
+  const row = requestItems.value[idx]
+  if (!row) return ''
+  const t = traceCell(row.requestArgs)
+  return `시나리오 실행 · VU ${t.vu} · 반복 ${t.iter}`
+}
 
 function formatMs(ms) {
   if (ms == null) return '-'
@@ -289,11 +391,70 @@ function formatPercent(rate) {
   return `${(rate * 100).toFixed(2)}%`
 }
 
-const PREVIEW_MAX = 500
-function bodyPreviewShort(text) {
+function parseRequestArgsJson(raw) {
+  if (raw == null) return null
+  if (typeof raw === 'object') return raw
+  if (typeof raw !== 'string' || !raw.trim()) return null
+  try {
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
+/** request_args(JSON)에서 VU·반복·단계 표시용 */
+function requestTraceDisplay(requestArgsRaw) {
+  const o = parseRequestArgsJson(requestArgsRaw)
+  if (!o) return { vu: '—', iter: '—', stepLabel: '—', groupKey: '' }
+  const vu = o.vu != null && o.vu !== '' ? String(o.vu) : '—'
+  const iter = o.scenarioIter != null && o.scenarioIter !== '' ? String(o.scenarioIter) : '—'
+  let stepLabel = '—'
+  if (o.step != null && String(o.step).trim()) {
+    const si = o.stepIndex
+    stepLabel = si != null && si !== '' ? `${o.step} (#${si})` : String(o.step)
+  }
+  const groupKey = vu !== '—' && iter !== '—' ? `${vu}-${iter}` : ''
+  return { vu, iter, stepLabel, groupKey }
+}
+
+function traceCell(requestArgsRaw) {
+  return requestTraceDisplay(requestArgsRaw)
+}
+
+function traceStripeClass(row) {
+  const { groupKey } = requestTraceDisplay(row.requestArgs)
+  if (!groupKey) return ''
+  let h = 0
+  for (let i = 0; i < groupKey.length; i++) h = ((h << 5) - h + groupKey.charCodeAt(i)) | 0
+  return Math.abs(h) % 2 === 0 ? 'trace-stripe-a' : 'trace-stripe-b'
+}
+
+function requestRowClasses(row, idx) {
+  const cls = {}
+  if (row.failed) cls['row-failed'] = true
+  const st = traceStripeClass(row)
+  if (st) cls[st] = true
+  if (requestSort.value === 'vuTrace' && taskGroupKeyFromRow(row)) {
+    cls['task-in-group'] = true
+    const items = requestItems.value
+    const key = taskGroupKeyFromRow(row)
+    const nextK = idx < items.length - 1 ? taskGroupKeyFromRow(items[idx + 1]) : ''
+    if (key !== nextK) cls['task-group-last'] = true
+  }
+  return cls
+}
+
+function bodyPreviewShort(text, maxLen) {
   if (!text) return ''
-  if (text.length <= PREVIEW_MAX) return text
-  return text.slice(0, PREVIEW_MAX) + '...'
+  const n = maxLen == null || Number.isNaN(Number(maxLen)) ? 500 : Number(maxLen)
+  if (n <= 0) return '…'
+  if (text.length <= n) return text
+  return text.slice(0, n) + '...'
+}
+
+function onRequestSortChange() {
+  requestPage.value = 1
+  loadRequests()
 }
 
 async function loadRequests() {
@@ -301,7 +462,8 @@ async function loadRequests() {
   const limit = requestPageSize.value
   const offset = (requestPage.value - 1) * limit
   try {
-    const res = await get(`runs/${runId}/requests?limit=${limit}&offset=${offset}`)
+    const sortQ = encodeURIComponent(requestSort.value || 'vuTrace')
+    const res = await get(`runs/${runId}/requests?limit=${limit}&offset=${offset}&sort=${sortQ}`)
     requestItems.value = res.items || []
     if (requestsTotal.value == null) requestsTotal.value = res.total ?? 0
   } catch (err) {
@@ -350,7 +512,9 @@ async function load() {
     const [resResult, resConfig, resRequests] = await Promise.all([
       get(`runs/${runId}/result`),
       get('config').catch(() => ({})),
-      get(`runs/${runId}/requests?limit=${requestPageSize.value}&offset=0`).catch((e) => {
+      get(
+        `runs/${runId}/requests?limit=${requestPageSize.value}&offset=0&sort=${encodeURIComponent(requestSort.value || 'vuTrace')}`,
+      ).catch((e) => {
         console.warn('요청별 응답 로드 실패:', e)
         return { items: [], total: 0 }
       }),
@@ -416,7 +580,28 @@ onMounted(load)
   border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
 }
 .request-table th { font-weight: 600; }
+.request-table tr.task-group-sep td {
+  border-bottom: none;
+  padding: 0;
+}
+.request-table td.task-group-sep-cell {
+  padding: 8px 10px 4px;
+  background: rgba(var(--v-theme-primary), 0.08);
+  font-weight: 600;
+  font-size: 0.75rem;
+  color: rgb(var(--v-theme-primary));
+  border-top: 1px solid rgba(var(--v-theme-primary), 0.35);
+}
+.request-table tr.task-in-group td:first-child {
+  box-shadow: inset 3px 0 0 rgb(var(--v-theme-primary));
+}
+.request-table tr.task-group-last td {
+  border-bottom: 1px solid rgba(var(--v-theme-primary), 0.25);
+}
+.request-table tr.trace-stripe-a:not(.row-failed) { background: rgba(0, 0, 0, 0.03); }
+.request-table tr.trace-stripe-b:not(.row-failed) { background: rgba(0, 0, 0, 0.055); }
 .request-table tr.row-failed { background: rgba(var(--v-theme-error), 0.08); }
+.step-cell { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .body-preview-cell { max-width: 320px; position: relative; }
 .body-preview-wrap {
   position: relative;
