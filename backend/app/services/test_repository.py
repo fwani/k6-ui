@@ -4,13 +4,35 @@ import uuid
 from typing import Any
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
-from app.models.db import PerformanceTest
+from app.api.schemas.test import normalize_tag_list
+from app.models.db import PerformanceTest, Tag
 from app.services.error_page_rules import ERROR_RULES_UNCHANGED
 
 # update(..., http_scenario=...) 에서 생략 시 DB 값 유지
 HTTP_SCENARIO_UNCHANGED = object()
+BROWSER_ACTIONS_UNCHANGED = object()
+TAGS_UNCHANGED = object()
+
+
+def _get_or_create_tag(db: Session, name: str) -> Tag:
+    stmt = select(Tag).where(Tag.name == name)
+    row = db.execute(stmt).scalar_one_or_none()
+    if row:
+        return row
+    t = Tag(name=name)
+    db.add(t)
+    db.flush()
+    return t
+
+
+def _sync_tags_to_test(db: Session, test: PerformanceTest, names: list[str]) -> None:
+    normalized = normalize_tag_list(names)
+    test.tags.clear()
+    for name in normalized:
+        tag = _get_or_create_tag(db, name)
+        test.tags.append(tag)
 
 
 def create(
@@ -35,6 +57,8 @@ def create(
     error_page_pattern: str | None = None,
     error_page_match_mode: str = "contains",
     http_scenario: str | None = None,
+    browser_actions: str | None = None,
+    tags: list[str] | None = None,
 ) -> PerformanceTest:
     engine_val = "browser" if (engine or "").strip().lower() == "browser" else "http"
     t = PerformanceTest(
@@ -58,19 +82,44 @@ def create(
         error_page_pattern=error_page_pattern,
         error_page_match_mode=(error_page_match_mode if error_page_match_mode in ("contains", "not_contains") else "contains"),
         http_scenario=http_scenario,
+        browser_actions=browser_actions,
     )
     db.add(t)
+    db.flush()
+    _sync_tags_to_test(db, t, tags or [])
     db.commit()
     db.refresh(t)
     return t
 
 
 def get(db: Session, id: str) -> PerformanceTest | None:
-    return db.get(PerformanceTest, id)
+    stmt = (
+        select(PerformanceTest)
+        .options(selectinload(PerformanceTest.tags))
+        .where(PerformanceTest.id == id)
+    )
+    return db.execute(stmt).scalar_one_or_none()
 
 
-def list_all(db: Session) -> list[PerformanceTest]:
-    stmt = select(PerformanceTest).order_by(PerformanceTest.created_at.desc())
+def list_all_tag_names(db: Session) -> list[str]:
+    """등록된 태그 이름 전체(가나다·abc 순)."""
+    stmt = select(Tag.name).order_by(Tag.name)
+    return list(db.execute(stmt).scalars().all())
+
+
+def list_all(db: Session, tag: str | None = None) -> list[PerformanceTest]:
+    needle = (tag or "").strip()
+    stmt = select(PerformanceTest).options(selectinload(PerformanceTest.tags)).order_by(
+        PerformanceTest.created_at.desc()
+    )
+    if needle:
+        stmt = (
+            select(PerformanceTest)
+            .join(PerformanceTest.tags)
+            .where(Tag.name == needle)
+            .options(selectinload(PerformanceTest.tags))
+            .order_by(PerformanceTest.created_at.desc())
+        )
     return list(db.execute(stmt).scalars().all())
 
 
@@ -95,6 +144,8 @@ def update(
     vu_start: int | None = None,
     error_rules: Any = ERROR_RULES_UNCHANGED,
     http_scenario: Any = HTTP_SCENARIO_UNCHANGED,
+    browser_actions: Any = BROWSER_ACTIONS_UNCHANGED,
+    tags: Any = TAGS_UNCHANGED,
 ) -> PerformanceTest:
     if name is not None:
         t.name = name
@@ -133,6 +184,10 @@ def update(
         t.error_page_match_mode = r_mode if r_mode in ("contains", "not_contains") else "contains"
     if http_scenario is not HTTP_SCENARIO_UNCHANGED:
         t.http_scenario = http_scenario
+    if browser_actions is not BROWSER_ACTIONS_UNCHANGED:
+        t.browser_actions = browser_actions
+    if tags is not TAGS_UNCHANGED:
+        _sync_tags_to_test(db, t, tags)
     db.commit()
     db.refresh(t)
     return t

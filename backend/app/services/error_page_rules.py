@@ -9,28 +9,41 @@ from typing import Any
 ERROR_RULES_UNCHANGED = object()
 
 
+def parse_error_rules_json_array(data: list[Any]) -> list[dict[str, str]]:
+    """JSON/API 배열 [{pattern, matchMode|match_mode}, ...] → k6·검증용."""
+    out: list[dict[str, str]] = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        pat = (item.get("pattern") or "").strip()
+        if not pat:
+            continue
+        mode = (item.get("matchMode") or item.get("match_mode") or "contains").strip()
+        if mode not in ("contains", "not_contains"):
+            mode = "contains"
+        out.append({"pattern": pat, "matchMode": mode})
+    return out
+
+
+def parse_error_rules_from_list(raw: Any) -> list[dict[str, str]]:
+    """http_scenario 스텝 필드 errorPageRules (이미 파싱된 list)."""
+    if isinstance(raw, list):
+        return parse_error_rules_json_array(raw)
+    return []
+
+
 def parse_error_rules_from_test(test: Any) -> list[dict[str, str]]:
     """k6/브라우저 공통. 각 항목: pattern, matchMode (contains | not_contains)."""
     raw = getattr(test, "error_page_rules", None)
-    out: list[dict[str, str]] = []
     if raw and str(raw).strip():
         try:
             data = json.loads(raw)
             if isinstance(data, list):
-                for item in data:
-                    if not isinstance(item, dict):
-                        continue
-                    pat = (item.get("pattern") or "").strip()
-                    if not pat:
-                        continue
-                    mode = (item.get("matchMode") or item.get("match_mode") or "contains").strip()
-                    if mode not in ("contains", "not_contains"):
-                        mode = "contains"
-                    out.append({"pattern": pat, "matchMode": mode})
+                out = parse_error_rules_json_array(data)
+                if out:
+                    return out
         except (json.JSONDecodeError, TypeError):
             pass
-    if out:
-        return out
     pat = (getattr(test, "error_page_pattern", None) or "").strip()
     if not pat:
         return []

@@ -1,52 +1,69 @@
 <template>
-  <div class="run-result">
-    <h1 class="text-h5 mb-2">테스트 결과</h1>
-    <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
-    <v-alert v-else-if="error" type="error" density="compact" class="mb-2">{{ error }}</v-alert>
+  <div class="run-result page-section">
+    <h1 class="page-title">테스트 결과</h1>
+    <UiProgress v-if="loading" indeterminate class="mb-2" />
+    <UiAlert v-else-if="error" type="error" class="mb-2">{{ error }}</UiAlert>
     <template v-else-if="result">
-      <v-sheet class="pa-3 mb-2" rounded>
-        <p class="text-caption text-medium-emphasis mb-2">HTTP 요청 기준 요약 (k6) 또는 브라우저 페이지 로드 요약</p>
-        <v-list density="compact" class="py-0">
-          <v-list-item>
-            <v-list-item-title>평균 응답 시간</v-list-item-title>
-            <v-list-item-subtitle>요청별 응답 시간의 평균</v-list-item-subtitle>
-            <template #append>{{ formatMs(result.avgResponseTime) }}</template>
-          </v-list-item>
-          <v-list-item>
-            <v-list-item-title>최대 응답 시간</v-list-item-title>
-            <v-list-item-subtitle>가장 오래 걸린 요청의 응답 시간</v-list-item-subtitle>
-            <template #append>{{ formatMs(result.maxResponseTime) }}</template>
-          </v-list-item>
-          <v-list-item>
-            <v-list-item-title>종합 실패율</v-list-item-title>
-            <v-list-item-subtitle
-              >저장된 요청·페이지 로드 단위: HTTP 상태가 2xx가 아니거나, 에러 페이지 판별에 걸린 비율</v-list-item-subtitle
-            >
-            <template #append>{{ formatPercent(result.overallFailureRate ?? 0) }}</template>
-          </v-list-item>
-          <v-list-item>
-            <v-list-item-title>HTTP 실패율</v-list-item-title>
-            <v-list-item-subtitle>k6 기준 http_req_failed (연결·응답 상태). 200이어도 본문 판별 실패는 여기엔 안 잡힐 수 있음</v-list-item-subtitle>
-            <template #append>{{ formatPercent(result.failureRate) }}</template>
-          </v-list-item>
-          <v-list-item>
-            <v-list-item-title>요청 수</v-list-item-title>
-            <v-list-item-subtitle>총 요청(또는 페이지 로드) 횟수</v-list-item-subtitle>
-            <template #append>{{ result.requestCount }}</template>
-          </v-list-item>
-          <v-list-item>
-            <v-list-item-title>TPS/RPS</v-list-item-title>
-            <v-list-item-subtitle>초당 요청 수 (Transactions / Requests per second)</v-list-item-subtitle>
-            <template #append>{{ result.tpsOrRps?.toFixed(2) ?? '-' }}</template>
-          </v-list-item>
-          <v-list-item>
-            <v-list-item-title>실행 시간</v-list-item-title>
-            <v-list-item-subtitle>테스트가 돌아간 총 시간</v-list-item-subtitle>
-            <template #append>{{ result.executionTime?.toFixed(1) ?? '-' }}초</template>
-          </v-list-item>
-        </v-list>
-      </v-sheet>
-      <v-sheet v-if="result.stepSummaries?.length > 0" class="pa-3 mb-2" rounded>
+      <div class="panel mb-2">
+        <p class="text-caption text-medium-emphasis mb-2">
+          HTTP(k6): 아래 평균·최대·요청 수·TPS·실행 시간은 저장된 요청 로그(__REQ__)와 동일 기준이며, 실행 시간은 시작~종료 벽시계입니다.
+          「HTTP 실패율」만 k6 원시(http_req_failed)입니다. 브라우저 실행은 Web Vitals·렌더링 요약이 별도 패널입니다.
+        </p>
+        <div class="result-kv">
+          <div class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">평균 응답 시간</span>
+              <span class="result-kv-append">{{ formatMs(result.avgResponseTime) }}</span>
+            </div>
+            <p class="result-kv-sub">저장된 요청 행 기준 응답 시간 평균</p>
+          </div>
+          <div class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">최대 응답 시간</span>
+              <span class="result-kv-append">{{ formatMs(result.maxResponseTime) }}</span>
+            </div>
+            <p class="result-kv-sub">저장된 요청 행 중 최대 응답 시간</p>
+          </div>
+          <div class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">종합 실패율</span>
+              <span class="result-kv-append">{{ formatPercent(result.overallFailureRate ?? 0) }}</span>
+            </div>
+            <p class="result-kv-sub">
+              저장된 요청 행 기준: 2xx가 아니거나 에러 페이지 판별(failed) 비율
+            </p>
+          </div>
+          <div class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">HTTP 실패율 (k6)</span>
+              <span class="result-kv-append">{{ formatPercent(result.failureRate) }}</span>
+            </div>
+            <p class="result-kv-sub">k6 http_req_failed. 실제 HTTP 시도마다 집계라 폴링·리다이렉트 등이 많으면 종합 실패율과 다를 수 있음</p>
+          </div>
+          <div class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">요청 수</span>
+              <span class="result-kv-append">{{ result.requestCount }}</span>
+            </div>
+            <p class="result-kv-sub">저장된 요청 로그 행 수(폴링 스텝은 스텝당 1행)</p>
+          </div>
+          <div class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">TPS/RPS</span>
+              <span class="result-kv-append">{{ result.tpsOrRps?.toFixed(2) ?? '-' }}</span>
+            </div>
+            <p class="result-kv-sub">요청 수 ÷ 실행 시간(벽시계)</p>
+          </div>
+          <div class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">실행 시간</span>
+              <span class="result-kv-append">{{ result.executionTime?.toFixed(1) ?? '-' }}초</span>
+            </div>
+            <p class="result-kv-sub">Run 시작~종료(벽시계)</p>
+          </div>
+        </div>
+      </div>
+      <div v-if="result.stepSummaries?.length > 0" class="panel mb-2">
         <h3 class="text-subtitle-1 mb-1">스텝별 요약</h3>
         <p class="text-caption text-medium-emphasis mb-2">
           시나리오 스텝(저장된 요청 행 기준 집계). 단일 요청 테스트는 표가 비어 있을 수 있음.
@@ -78,41 +95,51 @@
             </tbody>
           </table>
         </div>
-      </v-sheet>
-      <v-sheet v-if="hasBrowserMetrics" class="pa-3 mb-2" rounded>
+      </div>
+      <div v-if="hasBrowserMetrics" class="panel mb-2">
         <h3 class="text-subtitle-1 mb-1">렌더링 메트릭</h3>
         <p class="text-caption text-medium-emphasis mb-2">브라우저(Chromium) 엔진으로 수집한 Web Vitals. 사용자 체감 로딩·안정성 지표입니다.</p>
-        <v-list density="compact" class="py-0">
-          <v-list-item v-if="result.lcpMs != null">
-            <v-list-item-title>LCP (Largest Contentful Paint)</v-list-item-title>
-            <v-list-item-subtitle>가장 큰 콘텐츠가 화면에 그려지기까지 걸린 시간. 로딩 체감의 핵심 지표. 낮을수록 좋음.</v-list-item-subtitle>
-            <template #append>{{ formatMs(result.lcpMs) }}</template>
-          </v-list-item>
-          <v-list-item v-if="result.fcpMs != null">
-            <v-list-item-title>FCP (First Contentful Paint)</v-list-item-title>
-            <v-list-item-subtitle>첫 픽셀(텍스트·이미지 등)이 화면에 나타난 시점. 처음 반응이 보이는 속도. 낮을수록 좋음.</v-list-item-subtitle>
-            <template #append>{{ formatMs(result.fcpMs) }}</template>
-          </v-list-item>
-          <v-list-item v-if="result.ttfbMs != null">
-            <v-list-item-title>TTFB (Time to First Byte)</v-list-item-title>
-            <v-list-item-subtitle>서버가 첫 바이트를 보내기까지 걸린 시간. 네트워크·서버 응답 지연. 낮을수록 좋음.</v-list-item-subtitle>
-            <template #append>{{ formatMs(result.ttfbMs) }}</template>
-          </v-list-item>
-          <v-list-item v-if="result.cls != null">
-            <v-list-item-title>CLS (Cumulative Layout Shift)</v-list-item-title>
-            <v-list-item-subtitle>레이아웃이 밀리는 정도의 누적 값. 0에 가까울수록 시각적 안정성이 좋음. 0.1 이하 권장.</v-list-item-subtitle>
-            <template #append>{{ result.cls?.toFixed(4) ?? '—' }}</template>
-          </v-list-item>
-        </v-list>
-      </v-sheet>
-      <v-alert v-if="result.errorMessage" type="error" variant="tonal" density="compact" class="mb-2">
-        <template #title>실패 사유</template>
-        <pre class="text-caption overflow-auto" style="max-height: 20em; white-space: pre-wrap; word-break: break-all;">{{ result.errorMessage }}</pre>
-      </v-alert>
+        <div class="result-kv">
+          <div v-if="result.lcpMs != null" class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">LCP (Largest Contentful Paint)</span>
+              <span class="result-kv-append">{{ formatMs(result.lcpMs) }}</span>
+            </div>
+            <p class="result-kv-sub">가장 큰 콘텐츠가 화면에 그려지기까지 걸린 시간. 로딩 체감의 핵심 지표. 낮을수록 좋음.</p>
+          </div>
+          <div v-if="result.fcpMs != null" class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">FCP (First Contentful Paint)</span>
+              <span class="result-kv-append">{{ formatMs(result.fcpMs) }}</span>
+            </div>
+            <p class="result-kv-sub">첫 픽셀(텍스트·이미지 등)이 화면에 나타난 시점. 처음 반응이 보이는 속도. 낮을수록 좋음.</p>
+          </div>
+          <div v-if="result.ttfbMs != null" class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">TTFB (Time to First Byte)</span>
+              <span class="result-kv-append">{{ formatMs(result.ttfbMs) }}</span>
+            </div>
+            <p class="result-kv-sub">서버가 첫 바이트를 보내기까지 걸린 시간. 네트워크·서버 응답 지연. 낮을수록 좋음.</p>
+          </div>
+          <div v-if="result.cls != null" class="result-kv-item">
+            <div class="result-kv-head">
+              <span class="result-kv-title">CLS (Cumulative Layout Shift)</span>
+              <span class="result-kv-append">{{ result.cls?.toFixed(4) ?? '—' }}</span>
+            </div>
+            <p class="result-kv-sub">레이아웃이 밀리는 정도의 누적 값. 0에 가까울수록 시각적 안정성이 좋음. 0.1 이하 권장.</p>
+          </div>
+        </div>
+      </div>
+      <UiAlert v-if="result.errorMessage" type="error" class="mb-2">
+        <strong>실패 사유</strong>
+        <pre class="text-caption overflow-auto result-err-pre">{{ result.errorMessage }}</pre>
+      </UiAlert>
       <p class="d-flex flex-wrap align-center gap-2">
         <template v-if="grafanaUrl">
-          <v-btn :href="grafanaUrl" target="_blank" rel="noopener" color="primary" variant="text">Grafana (k6) 대시보드</v-btn>
-          <v-btn
+          <UiBtn :href="grafanaUrl" target="_blank" rel="noopener" color="primary" variant="text">
+            Grafana (k6) 대시보드
+          </UiBtn>
+          <UiBtn
             v-if="hasBrowserMetrics && grafanaBrowserVitalsUrl"
             :href="grafanaBrowserVitalsUrl"
             target="_blank"
@@ -121,7 +148,7 @@
             variant="text"
           >
             Grafana (Browser Web Vitals)
-          </v-btn>
+          </UiBtn>
         </template>
         <span v-else class="text-body-2 text-medium-emphasis">Grafana URL이 설정되지 않았습니다.</span>
       </p>
@@ -135,33 +162,24 @@
               총 {{ requestsTotal }}건
               <span v-if="requestsTotal > 0"> ({{ requestStart }}–{{ requestEnd }} 표시)</span>
             </p>
-            <v-select
+            <UiSelect
               v-model="requestPageSize"
               :items="[10, 20, 50, 100]"
-              density="compact"
               hide-details
               label="표시 수"
               class="page-size-select"
               style="width: 110px"
               @update:model-value="onPageSizeChange"
             />
-            <v-pagination
-              v-model="requestPage"
-              :length="requestPageCount"
-              :total-visible="7"
-              density="compact"
-              show-first-last-page
-              @update:model-value="loadRequests"
-            />
+            <UiPagination v-model="requestPage" :length="requestPageCount" @update:model-value="loadRequests" />
           </div>
           <div class="d-flex align-center flex-wrap gap-2 mb-2">
-            <v-select
+            <UiSelect
               v-model="requestSort"
               :items="requestSortItems"
               item-title="title"
               item-value="value"
               label="요청 목록 정렬"
-              density="compact"
               hide-details
               class="request-sort-select"
               style="min-width: 200px"
@@ -216,7 +234,7 @@
                   <td>{{ formatRequestedAt(row.requestedAt) }}</td>
                   <td>{{ row.statusCode ?? '—' }}</td>
                   <td>
-                    <v-chip v-if="row.failed" color="error" size="x-small" density="compact">실패</v-chip>
+                    <UiChip v-if="row.failed" color="error" size="x-small">실패</UiChip>
                     <span v-else class="text-medium-emphasis">—</span>
                   </td>
                   <td>{{ formatMs(row.responseTimeMs) }}</td>
@@ -239,24 +257,16 @@
               총 {{ requestsTotal }}건
               <span v-if="requestsTotal > 0"> ({{ requestStart }}–{{ requestEnd }} 표시)</span>
             </p>
-            <v-select
+            <UiSelect
               v-model="requestPageSize"
               :items="[10, 20, 50, 100]"
-              density="compact"
               hide-details
               label="표시 수"
               class="page-size-select"
               style="width: 110px"
               @update:model-value="onPageSizeChange"
             />
-            <v-pagination
-              v-model="requestPage"
-              :length="requestPageCount"
-              :total-visible="7"
-              density="compact"
-              show-first-last-page
-              @update:model-value="loadRequests"
-            />
+            <UiPagination v-model="requestPage" :length="requestPageCount" @update:model-value="loadRequests" />
           </div>
         </template>
       </section>
@@ -279,6 +289,12 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRoute } from 'vue-router'
 import { baseURL, get, getApiErrorMessage } from '../services/api'
+import UiProgress from '../components/UiProgress.vue'
+import UiAlert from '../components/UiAlert.vue'
+import UiBtn from '../components/UiBtn.vue'
+import UiSelect from '../components/UiSelect.vue'
+import UiPagination from '../components/UiPagination.vue'
+import UiChip from '../components/UiChip.vue'
 
 const route = useRoute()
 const runId = route.params.id
@@ -411,7 +427,14 @@ function requestTraceDisplay(requestArgsRaw) {
   let stepLabel = '—'
   if (o.step != null && String(o.step).trim()) {
     const si = o.stepIndex
-    stepLabel = si != null && si !== '' ? `${o.step} (#${si})` : String(o.step)
+    const base =
+      si != null && si !== '' ? `${o.step} (#${si})` : String(o.step)
+    const pt = o.pollTotalAttempts
+    if (o.poll === true && pt != null && pt !== '' && !Number.isNaN(Number(pt))) {
+      stepLabel = `${base} · 폴링 ${pt}회`
+    } else {
+      stepLabel = base
+    }
   }
   const groupKey = vu !== '—' && iter !== '—' ? `${vu}-${iter}` : ''
   return { vu, iter, stepLabel, groupKey }
@@ -554,10 +577,10 @@ onMounted(load)
   position: fixed;
   z-index: 9999;
   padding: 8px;
-  background: rgb(var(--v-theme-surface));
+  background: var(--bg-elevated);
   border-radius: 8px;
   box-shadow: 0 4px 24px rgba(0, 0, 0, 0.25);
-  border: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border: 0.5px solid var(--border-default);
 }
 .screenshot-hover-img {
   display: block;
@@ -577,7 +600,7 @@ onMounted(load)
 .request-table td {
   padding: 6px 8px;
   text-align: left;
-  border-bottom: 1px solid rgba(var(--v-border-color), var(--v-border-opacity));
+  border-bottom: 0.5px solid var(--border-default);
 }
 .request-table th { font-weight: 600; }
 .request-table tr.task-group-sep td {
@@ -586,21 +609,27 @@ onMounted(load)
 }
 .request-table td.task-group-sep-cell {
   padding: 8px 10px 4px;
-  background: rgba(var(--v-theme-primary), 0.08);
+  background: color-mix(in srgb, var(--accent-success) 10%, transparent);
   font-weight: 600;
   font-size: 0.75rem;
-  color: rgb(var(--v-theme-primary));
-  border-top: 1px solid rgba(var(--v-theme-primary), 0.35);
+  color: var(--accent-success);
+  border-top: 0.5px solid color-mix(in srgb, var(--accent-success) 35%, transparent);
 }
 .request-table tr.task-in-group td:first-child {
-  box-shadow: inset 3px 0 0 rgb(var(--v-theme-primary));
+  box-shadow: inset 3px 0 0 var(--accent-success);
 }
 .request-table tr.task-group-last td {
-  border-bottom: 1px solid rgba(var(--v-theme-primary), 0.25);
+  border-bottom: 0.5px solid color-mix(in srgb, var(--accent-success) 25%, transparent);
 }
-.request-table tr.trace-stripe-a:not(.row-failed) { background: rgba(0, 0, 0, 0.03); }
-.request-table tr.trace-stripe-b:not(.row-failed) { background: rgba(0, 0, 0, 0.055); }
-.request-table tr.row-failed { background: rgba(var(--v-theme-error), 0.08); }
+.request-table tr.trace-stripe-a:not(.row-failed) {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+.request-table tr.trace-stripe-b:not(.row-failed) {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+}
+.request-table tr.row-failed {
+  background: color-mix(in srgb, var(--accent-danger) 10%, transparent);
+}
 .step-cell { max-width: 140px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .body-preview-cell { max-width: 320px; position: relative; }
 .body-preview-wrap {
@@ -624,8 +653,8 @@ onMounted(load)
   right: 0;
   bottom: 0;
   z-index: 2;
-  background: rgb(var(--v-theme-surface));
-  box-shadow: 0 0 0 1px rgba(var(--v-border-color), var(--v-border-opacity));
+  background: var(--bg-surface);
+  box-shadow: 0 0 0 0.5px var(--border-default);
   border-radius: 4px;
   overflow: auto;
   padding: 6px 8px;
@@ -642,5 +671,51 @@ onMounted(load)
   font-size: 0.75rem;
   white-space: pre-wrap;
   word-break: break-all;
+}
+.result-kv {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px 16px;
+}
+@media (min-width: 640px) {
+  .result-kv {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+.result-kv-item {
+  padding-bottom: 8px;
+  border-bottom: 0.5px solid var(--border-default);
+}
+.result-kv-item:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.result-kv-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.result-kv-title {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+.result-kv-append {
+  font-size: 0.875rem;
+  color: var(--text-primary);
+  flex-shrink: 0;
+}
+.result-kv-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  line-height: 1.45;
+}
+.result-err-pre {
+  max-height: 20em;
+  white-space: pre-wrap;
+  word-break: break-all;
+  margin: 8px 0 0;
 }
 </style>

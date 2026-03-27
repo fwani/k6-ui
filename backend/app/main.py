@@ -12,6 +12,7 @@ import app.database  # noqa: F401 - ensure DB init on import
 from app.api.config import router as config_router
 from app.api.runs import router as runs_router
 from app.api.tests import router as tests_router
+from app.api.uploads import router as uploads_router
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +24,7 @@ app = FastAPI(title="성능 테스트 API", version="0.0.1")
 app.include_router(tests_router)
 app.include_router(runs_router)
 app.include_router(config_router)
+app.include_router(uploads_router)
 
 # CORS
 app.add_middleware(

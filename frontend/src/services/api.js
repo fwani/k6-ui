@@ -79,4 +79,19 @@ export async function del(path, options = {}) {
   return handleResponse(res)
 }
 
+/**
+ * k6 multipart용 파일을 API 서버에 저장하고 filePath, fileName, contentType 을 반환.
+ * @param {File} file
+ * @returns {Promise<{ filePath: string, fileName: string, contentType: string }>}
+ */
+export async function postK6Fixture(file) {
+  const fd = new FormData()
+  fd.append('file', file)
+  const res = await fetch(url('uploads/k6-fixture'), {
+    method: 'POST',
+    body: fd,
+  })
+  return handleResponse(res)
+}
+
 export { baseURL }

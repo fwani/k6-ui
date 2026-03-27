@@ -27,6 +27,7 @@ from app.services import (
     test_repository,
 )
 from app.services.run_request_repository import normalize_requests_sort
+from app.config import BROWSER_HEADLESS
 from app.services.browser_runner import BrowserNotFoundError
 from app.services.k6_runner import K6NotFoundError
 
@@ -51,6 +52,36 @@ def _compute_overall_failure_rate(
         if rule_failed or http_bad:
             bad += 1
     return (bad / n) if n else float(http_failure_rate)
+
+
+def _align_k6_summary_with_stored_rows(
+    summary: dict,
+    request_responses: list[dict] | None,
+    exec_sec_wall: float,
+) -> dict:
+    """k6 summary는 모든 HTTP를 포함. 저장 __REQ__ 행·벽시계 실행 시간에 맞춘다."""
+    out = dict(summary)
+    rows = request_responses or []
+    if exec_sec_wall > 0:
+        out["execution_time"] = float(exec_sec_wall)
+    if not rows:
+        return out
+    out["request_count"] = len(rows)
+    times: list[float] = []
+    for r in rows:
+        t = r.get("response_time_ms")
+        if t is None:
+            continue
+        try:
+            times.append(float(t))
+        except (TypeError, ValueError):
+            continue
+    if times:
+        out["avg_response_time"] = sum(times) / len(times)
+        out["max_response_time"] = max(times)
+    if exec_sec_wall > 0:
+        out["tps_or_rps"] = len(rows) / float(exec_sec_wall)
+    return out
 
 
 def _to_response(orm: TestRun) -> dict:
@@ -84,6 +115,11 @@ def _on_run_complete(
             if summary:
                 http_fr = float(summary["failure_rate"])
                 overall_fr = _compute_overall_failure_rate(request_responses, http_fr)
+                engine = (getattr(r, "engine", None) or "http").strip().lower()
+                if engine == "http":
+                    summary = _align_k6_summary_with_stored_rows(
+                        summary, request_responses, exec_sec
+                    )
                 result_repository.create(
                     db,
                     run_id=run_id,
@@ -151,10 +187,17 @@ def start_run(
         raise HTTPException(status_code=404, detail="테스트를 찾을 수 없습니다.")
     start_body = body if body is not None else StartRunRequest()
     hdr_over = start_body.request_header_overrides or {}
+    browser_headless = (
+        False if getattr(start_body, "show_browser", False) else BROWSER_HEADLESS
+    )
     try:
         if engine == "browser":
             browser_runner.start(
-                run.id, test, on_complete=_on_run_complete, request_header_overrides=hdr_over
+                run.id,
+                test,
+                on_complete=_on_run_complete,
+                request_header_overrides=hdr_over,
+                headless=browser_headless,
             )
         else:
             k6_runner.start(

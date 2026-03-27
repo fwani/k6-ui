@@ -4,7 +4,7 @@ import json
 import logging
 import threading
 from datetime import datetime, timezone
-from typing import Callable
+from typing import Any, Callable
 from urllib.parse import quote
 
 from app.config import INFLUXDB_URL
@@ -123,9 +123,9 @@ def _cookie_header_to_playwright(cookie_header: str, page_url: str) -> list[dict
 
 def _playwright_context_options(
     merged_headers: dict[str, str], page_url: str
-) -> tuple[dict, list[dict[str, str]]]:
-    """new_context(**첫_값)과 add_cookies(둘째)로 나눔. Cookie/User-Agent는 브라우저 규칙에 맞게 처리."""
-    extra: dict[str, str] = {}
+) -> tuple[dict, list[dict[str, str]], dict[str, str]]:
+    """new_context kwargs, add_cookies 목록, route로 합칠 헤더(Authorization 등). Cookie/User-Agent는 여기서 제외."""
+    inject: dict[str, str] = {}
     user_agent: str | None = None
     cookie_strs: list[str] = []
 
@@ -140,7 +140,7 @@ def _playwright_context_options(
             if vs:
                 user_agent = vs
             continue
-        extra[str(k)] = "" if v is None else str(v)
+        inject[str(k)] = "" if v is None else str(v)
 
     cookies: list[dict[str, str]] = []
     for cs in cookie_strs:
@@ -149,9 +149,55 @@ def _playwright_context_options(
     ctx_kwargs: dict = {}
     if user_agent:
         ctx_kwargs["user_agent"] = user_agent
-    if extra:
-        ctx_kwargs["extra_http_headers"] = extra
-    return ctx_kwargs, cookies
+    return ctx_kwargs, cookies, inject
+
+
+# script/stylesheet/image 등에 Authorization이 붙으면 정적 서버가 403·CORS로 막아 빈 화면이 되는 경우가 많음.
+_HEADER_INJECT_RESOURCE_TYPES = frozenset(
+    {"document", "fetch", "xhr", "eventsource"}
+)
+
+
+def _merge_outgoing_headers(
+    request_headers: dict[str, str], inject: dict[str, str]
+) -> dict[str, str]:
+    """기존 요청 헤더에 inject를 덮어씀. 같은 의미(대소문자 무시)의 키는 inject로 통일."""
+    inj_lower = {str(k).lower() for k in inject}
+    out: dict[str, str] = {}
+    for k, v in request_headers.items():
+        if str(k).lower() in inj_lower:
+            continue
+        out[str(k)] = str(v) if v is not None else ""
+    for k, v in inject.items():
+        out[str(k)] = "" if v is None else str(v)
+    return out
+
+
+def _install_outgoing_header_route(context, inject: dict[str, str]) -> None:
+    """document·fetch·xhr(SSE)·… 에만 Authorization 등 합침. script/CSS에는 붙이지 않음."""
+    if not inject:
+        return
+
+    def _handler(route) -> None:
+        try:
+            req = route.request
+            rtype = getattr(req, "resource_type", "") or ""
+            if rtype == "websocket":
+                route.continue_()
+                return
+            if rtype not in _HEADER_INJECT_RESOURCE_TYPES:
+                route.continue_()
+                return
+            merged = _merge_outgoing_headers(dict(req.headers), inject)
+            route.continue_(headers=merged)
+        except Exception as ex:
+            logger.debug("header route failed: %s", ex)
+            try:
+                route.continue_()
+            except Exception:
+                pass
+
+    context.route("**/*", _handler)
 
 
 def _build_url(base: str, query_params: str | None) -> str:
@@ -193,6 +239,68 @@ def _append_log(run_id: str, line: str) -> None:
 def get_logs(run_id: str) -> list[str]:
     with _log_lock:
         return list(_log_buffers.get(run_id, []))
+
+
+def _parse_browser_actions_json(raw: str | None) -> list[dict[str, Any]]:
+    if not raw or not str(raw).strip():
+        return []
+    try:
+        data = json.loads(raw)
+    except (json.JSONDecodeError, TypeError) as e:
+        logger.warning("browser_actions JSON invalid, ignoring: %s", e)
+        return []
+    if not isinstance(data, list):
+        return []
+    return [x for x in data if isinstance(x, dict)]
+
+
+def _run_browser_actions(
+    page: Any,
+    actions: list[dict[str, Any]],
+    run_id: str,
+    vu_display: int,
+) -> None:
+    """페이지 로드 후 순서대로 wait_selector / click / sleep 실행. 실패 시 예외."""
+    n = len(actions)
+    for i, act in enumerate(actions):
+        kind = str(act.get("type") or act.get("kind") or "").strip()
+        to_raw = act.get("timeoutMs", 30000)
+        try:
+            timeout_ms = int(to_raw)
+        except (TypeError, ValueError):
+            timeout_ms = 30_000
+        timeout_ms = max(1_000, min(60_000, timeout_ms))
+
+        if kind == "wait_selector":
+            sel = str(act.get("selector") or "").strip()
+            if not sel:
+                raise ValueError("wait_selector: selector 가 비어 있습니다.")
+            page.locator(sel).first.wait_for(state="visible", timeout=timeout_ms)
+        elif kind == "click":
+            sel = str(act.get("selector") or "").strip()
+            if not sel:
+                raise ValueError("click: selector 가 비어 있습니다.")
+            # 클릭 후 라우팅/네비게이션까지 기다리면 SPA에서 타임아웃이 자주 남.
+            # 다음 단계 wait_selector 등으로 화면을 맞추는 편이 안정적임.
+            page.locator(sel).first.click(
+                timeout=timeout_ms, no_wait_after=True
+            )
+        elif kind == "sleep":
+            sm_raw = act.get("sleepMs")
+            if sm_raw is None:
+                raise ValueError("sleep: sleepMs 가 필요합니다.")
+            try:
+                sleep_ms = int(sm_raw)
+            except (TypeError, ValueError) as e:
+                raise ValueError("sleep: sleepMs 가 정수가 아닙니다.") from e
+            sleep_ms = max(0, min(30_000, sleep_ms))
+            page.wait_for_timeout(sleep_ms)
+        else:
+            raise ValueError(f'지원하지 않는 browser action type: "{kind}"')
+        _append_log(
+            run_id,
+            f"VU {vu_display}: browser action {i + 1}/{n} ({kind}) 완료",
+        )
 
 
 _WEB_VITALS_SCRIPT = """
@@ -242,8 +350,13 @@ def start(
     test: PerformanceTest,
     on_complete: Callable[[str, int, dict | None, str | None], None] | None = None,
     request_header_overrides: dict[str, str] | None = None,
+    *,
+    headless: bool = True,
 ) -> None:
-    """Chromium으로 test.target_url를 VUs 수만큼 로드 후 Web Vitals 수집, on_complete 호출."""
+    """Chromium으로 test.target_url를 VUs 수만큼 로드 후 Web Vitals 수집, on_complete 호출.
+
+    headless=False 이면 창을 띄움(로컬에서 API 실행·GUI 또는 DISPLAY/xvfb 필요). VU>1이면 창이 여러 개일 수 있음.
+    """
     url = _build_url(
         getattr(test, "target_url", None) or "",
         getattr(test, "query_params", None),
@@ -271,6 +384,14 @@ def start(
             _running[run_id] = {"stop_requested": False}
         with _log_lock:
             _log_buffers[run_id] = []
+        actions_list = _parse_browser_actions_json(getattr(test, "browser_actions", None))
+        if actions_list:
+            _append_log(run_id, f"로드 후 브라우저 동작 {len(actions_list)}단계 실행 예정")
+        if not headless:
+            _append_log(
+                run_id,
+                "Chromium 창 표시 모드입니다. API 프로세스에 디스플레이가 없으면 실패할 수 있습니다.",
+            )
 
         try:
             from playwright.sync_api import sync_playwright
@@ -306,12 +427,12 @@ def start(
                 if VU_PLACEHOLDER in url
                 else url
             )
-            ctx_kwargs, header_cookies = _playwright_context_options(
+            ctx_kwargs, header_cookies, header_inject = _playwright_context_options(
                 merged_headers, load_url
             )
             try:
                 with sync_playwright() as p:
-                    browser = p.chromium.launch(headless=True)
+                    browser = p.chromium.launch(headless=headless)
                     try:
                         context = browser.new_context(**ctx_kwargs)
                         if header_cookies:
@@ -327,11 +448,12 @@ def start(
                                     run_id,
                                     f"VU {vu_index + 1}: Cookie 설정 실패(형식·URL 도메인 확인): {ce}",
                                 )
+                        _install_outgoing_header_route(context, header_inject)
                         if merged_headers:
                             keys = sorted(merged_headers.keys())
                             via = []
-                            if ctx_kwargs.get("extra_http_headers"):
-                                via.append("extra_http_headers")
+                            if header_inject:
+                                via.append("doc+api(route)")
                             if ctx_kwargs.get("user_agent"):
                                 via.append("user_agent")
                             if header_cookies:
@@ -348,6 +470,19 @@ def start(
                             page = context.new_page()
                             page.set_viewport_size({"width": 1920, "height": 1080})
                             page.goto(load_url, wait_until="load", timeout=60000)
+                            try:
+                                page.wait_for_load_state(
+                                    "networkidle", timeout=15000
+                                )
+                            except Exception:
+                                pass
+                            if actions_list:
+                                _run_browser_actions(
+                                    page,
+                                    actions_list,
+                                    run_id,
+                                    vu_index + 1,
+                                )
                             vitals = page.evaluate(_WEB_VITALS_SCRIPT)
                             body_text_stored = ""
                             try:

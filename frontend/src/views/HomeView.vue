@@ -1,85 +1,71 @@
 <template>
-  <div>
-    <h1 class="text-h5 mb-2">성능 테스트</h1>
-    <p class="text-body-2 text-medium-emphasis mb-4">
+  <div class="page-section">
+    <h1 class="page-title">성능 테스트</h1>
+    <p class="page-lead">
       테스트를 정의하고 실행한 뒤, 실행 목록에서 상세·결과를 확인하세요.
     </p>
 
     <div class="d-flex flex-wrap gap-3 mb-6">
-      <v-card
+      <router-link
         to="/tests"
-        variant="tonal"
-        class="flex-grow-1"
-        min-width="160"
-        style="cursor: pointer"
+        class="surface-card flex-grow-1 text-decoration-none"
+        style="min-width: 160px"
       >
-        <v-card-text class="d-flex align-center gap-2">
-          <v-icon size="large">mdi-format-list-bulleted</v-icon>
+        <div class="d-flex align-center gap-2">
+          <UiIcon icon="mdi-format-list-bulleted" size="large" class="text-primary" />
           <div>
-            <div class="text-subtitle-1 font-weight-medium">테스트 목록</div>
-            <div class="text-caption text-medium-emphasis">테스트 정의·수정</div>
+            <div class="surface-card__title">테스트 목록</div>
+            <div class="surface-card__sub">테스트 정의·수정</div>
           </div>
-        </v-card-text>
-      </v-card>
-      <v-card
+        </div>
+      </router-link>
+      <router-link
         to="/runs"
-        variant="tonal"
-        class="flex-grow-1"
-        min-width="160"
-        style="cursor: pointer"
+        class="surface-card flex-grow-1 text-decoration-none"
+        style="min-width: 160px"
       >
-        <v-card-text class="d-flex align-center gap-2">
-          <v-icon size="large">mdi-play-circle-outline</v-icon>
+        <div class="d-flex align-center gap-2">
+          <UiIcon icon="mdi-play-circle-outline" size="large" class="text-primary" />
           <div>
-            <div class="text-subtitle-1 font-weight-medium">실행 목록</div>
-            <div class="text-caption text-medium-emphasis">실행 이력·상세·결과</div>
+            <div class="surface-card__title">실행 목록</div>
+            <div class="surface-card__sub">실행 이력·상세·결과</div>
           </div>
-        </v-card-text>
-      </v-card>
+        </div>
+      </router-link>
     </div>
 
-    <h2 class="text-subtitle-1 font-weight-medium mb-2">최근 실행</h2>
-    <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" style="max-width: 400px" />
+    <h2 class="text-subtitle-1 font-weight-medium mb-2" style="color: var(--text-primary)">최근 실행</h2>
+    <UiProgress v-if="loading" indeterminate class="mb-2" style="max-width: 400px" />
     <template v-else-if="recent.length">
-      <v-list density="compact" class="bg-transparent" style="max-width: 560px">
-        <v-list-item
-          v-for="r in recent"
-          :key="r.id"
-          :to="`/runs/${r.id}`"
-          class="px-0"
-        >
-          <template #prepend>
-            <v-chip :color="statusColor(r.status)" size="small" variant="flat" class="mr-2">
+      <ul class="home-recent-list">
+        <li v-for="r in recent" :key="r.id" class="home-recent-item">
+          <router-link :to="`/runs/${r.id}`" class="home-recent-link">
+            <span :class="statusPillClass(r.status)" class="mr-2">
+              <span class="pill-dot" aria-hidden="true" />
               {{ r.status }}
-            </v-chip>
-          </template>
-          <v-list-item-title>{{ r.testName }}</v-list-item-title>
-          <v-list-item-subtitle>{{ formatDate(r.startedAt) }}</v-list-item-subtitle>
-          <template #append>
-            <v-btn :to="`/runs/${r.id}/result`" variant="text" size="small" color="primary" @click.stop>결과</v-btn>
-          </template>
-        </v-list-item>
-      </v-list>
-      <v-btn to="/runs" variant="text" size="small" class="mt-2">전체 실행 목록</v-btn>
+            </span>
+            <span class="home-recent-name">{{ r.testName }}</span>
+            <span class="home-recent-date text-caption text-medium-emphasis">{{ formatDate(r.startedAt) }}</span>
+          </router-link>
+          <UiBtn :to="`/runs/${r.id}/result`" variant="text" color="primary" @click.stop>결과</UiBtn>
+        </li>
+      </ul>
+      <UiBtn to="/runs" variant="text" color="primary" class="mt-2">전체 실행 목록</UiBtn>
     </template>
-    <p v-else class="text-body-2 text-medium-emphasis">최근 실행 이력이 없습니다.</p>
+    <p v-else class="text-body-2" style="color: var(--text-secondary)">최근 실행 이력이 없습니다.</p>
   </div>
 </template>
 
 <script setup>
 import { ref, onMounted } from 'vue'
 import { get } from '../services/api'
+import { statusPillClass } from '../utils/statusPill'
+import UiProgress from '../components/UiProgress.vue'
+import UiBtn from '../components/UiBtn.vue'
+import UiIcon from '../components/UiIcon.vue'
 
 const loading = ref(true)
 const recent = ref([])
-
-function statusColor(status) {
-  const s = (status || '').toLowerCase()
-  if (s === 'finished') return 'success'
-  if (s === 'failed') return 'error'
-  if (s === 'running') return 'warning'
-  return 'default'
-}
 
 function formatDate(d) {
   if (!d) return '—'
@@ -99,3 +85,41 @@ onMounted(async () => {
   }
 })
 </script>
+
+<style scoped>
+.text-primary {
+  color: var(--accent-success);
+}
+.text-decoration-none {
+  text-decoration: none;
+  color: inherit;
+}
+.home-recent-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-width: 560px;
+}
+.home-recent-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 0.5px solid var(--border-default);
+}
+.home-recent-link {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  text-decoration: none;
+  color: inherit;
+}
+.home-recent-name {
+  flex: 1;
+  min-width: 0;
+}
+</style>

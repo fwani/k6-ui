@@ -9,6 +9,7 @@ services:
       DATABASE_URL: "sqlite:////app/data/app.db"
       GRAFANA_DASHBOARD_URL: "http://grafana:3001/d/k6-load-testing/k6-load-testing-results"
       INFLUXDB_URL: "http://influxdb:8086"
+      GRAPHIO_K6_FIXTURE_DIR: "/app/data/k6_fixtures"
     volumes:
       - api_data:/app/data
     depends_on:

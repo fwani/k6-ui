@@ -5,12 +5,14 @@ from typing import Any
 
 from sqlalchemy import (
     Boolean,
+    Column,
     DateTime,
     Float,
     ForeignKey,
     Integer,
     LargeBinary,
     String,
+    Table,
     Text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
@@ -18,6 +20,28 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 class Base(DeclarativeBase):
     """Declarative base for all models."""
+
+
+performance_test_tag = Table(
+    "performance_test_tag",
+    Base.metadata,
+    Column("test_id", String(36), ForeignKey("performance_test.id", ondelete="CASCADE"), primary_key=True),
+    Column("tag_id", Integer, ForeignKey("tag.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
+class Tag(Base):
+    """테스트에 붙는 태그 마스터. 이름 유일."""
+
+    __tablename__ = "tag"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(32), nullable=False, unique=True)
+
+    tests: Mapped[list["PerformanceTest"]] = relationship(
+        secondary=performance_test_tag,
+        back_populates="tags",
+    )
 
 
 class PerformanceTest(Base):
@@ -49,12 +73,19 @@ class PerformanceTest(Base):
     error_page_match_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="contains")
     # k6 전용: JSON 배열(단계). 비우면 단일 요청 모드(target_url 등).
     http_scenario: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # browser 전용: 로드 후 Playwright 액션 JSON 배열 (wait_selector | click | sleep).
+    browser_actions: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow
     )
 
     runs: Mapped[list["TestRun"]] = relationship("TestRun", back_populates="test")
+    tags: Mapped[list["Tag"]] = relationship(
+        secondary=performance_test_tag,
+        back_populates="tests",
+        order_by=Tag.name,
+    )
 
 
 class TestRun(Base):

@@ -1,30 +1,27 @@
 <template>
-  <div>
+  <div class="page-section">
     <div class="d-flex align-center justify-space-between mb-2 flex-wrap gap-2">
-      <h1 class="text-h5 mb-0">실행 결과 목록 (히스토리)</h1>
-      <v-btn
+      <h1 class="page-title mb-0">실행 결과 목록 (히스토리)</h1>
+      <UiBtn
         v-if="items.length"
         color="error"
-        variant="outlined"
-        size="small"
+        variant="flat"
         :disabled="selectedIds.length === 0"
         @click="confirmDelete"
       >
         선택 삭제 ({{ selectedIds.length }})
-      </v-btn>
+      </UiBtn>
     </div>
-    <v-progress-linear v-if="loading" indeterminate color="primary" class="mb-2" />
-    <v-alert v-else-if="error" type="error" closable density="compact" class="mb-2">{{ error }}</v-alert>
+    <UiProgress v-if="loading" indeterminate class="mb-2" />
+    <UiAlert v-else-if="error" type="error" closable class="mb-2" @close="error = ''">{{ error }}</UiAlert>
     <template v-else>
-      <v-table v-if="items.length" class="compact-table">
+      <table v-if="items.length" class="compact-table">
         <thead>
           <tr>
             <th style="width: 48px">
-              <v-checkbox
+              <UiCheckbox
                 :model-value="deletableIds.length > 0 && selectedIds.length === deletableIds.length"
                 :indeterminate="selectedIds.length > 0 && selectedIds.length < deletableIds.length"
-                hide-details
-                density="compact"
                 @update:model-value="toggleSelectAll"
               />
             </th>
@@ -40,24 +37,24 @@
         <tbody>
           <tr v-for="r in items" :key="r.id">
             <td>
-              <v-checkbox
+              <UiCheckbox
                 :model-value="selectedIds.includes(r.id)"
                 :disabled="r.status === 'Running'"
-                hide-details
-                density="compact"
                 @update:model-value="(v) => toggleSelect(r.id, v)"
               />
             </td>
             <td>{{ r.testName }}</td>
-            <td class="text-body-2">{{ r.engine === 'browser' ? '브라우저' : 'HTTP' }}</td>
             <td>
-              <v-chip
-                :color="statusColor(r.status)"
-                size="small"
-                variant="flat"
-              >
+              <span :class="enginePillClass(r.engine)">
+                <span class="pill-dot" aria-hidden="true" />
+                {{ r.engine === 'browser' ? '브라우저' : 'HTTP' }}
+              </span>
+            </td>
+            <td>
+              <span :class="statusPillClass(r.status)">
+                <span class="pill-dot" aria-hidden="true" />
                 {{ r.status }}
-              </v-chip>
+              </span>
             </td>
             <td>{{ formatDate(r.startedAt) }}</td>
             <td>{{ formatDate(r.finishedAt) }}</td>
@@ -69,12 +66,12 @@
               <span v-else>—</span>
             </td>
             <td>
-              <v-btn :to="`/runs/${r.id}`" variant="text" size="small" color="primary">상세</v-btn>
-              <v-btn :to="`/runs/${r.id}/result`" variant="text" size="small" color="primary">결과</v-btn>
+              <UiBtn :to="`/runs/${r.id}`" variant="text" color="primary">상세</UiBtn>
+              <UiBtn :to="`/runs/${r.id}/result`" variant="text" color="primary">결과</UiBtn>
             </td>
           </tr>
         </tbody>
-      </v-table>
+      </table>
       <p v-else class="text-body-2 text-medium-emphasis">실행 이력이 없습니다.</p>
     </template>
   </div>
@@ -83,6 +80,11 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { get, del, getApiErrorMessage } from '../services/api'
+import { statusPillClass, enginePillClass } from '../utils/statusPill'
+import UiBtn from '../components/UiBtn.vue'
+import UiProgress from '../components/UiProgress.vue'
+import UiAlert from '../components/UiAlert.vue'
+import UiCheckbox from '../components/UiCheckbox.vue'
 
 const items = ref([])
 const selectedIds = ref([])
@@ -130,14 +132,6 @@ async function doDelete() {
   await load()
 }
 
-function statusColor(status) {
-  const s = (status || '').toLowerCase()
-  if (s === 'finished') return 'success'
-  if (s === 'failed') return 'error'
-  if (s === 'running') return 'warning'
-  return 'default'
-}
-
 function formatDate(d) {
   if (!d) return '—'
   const iso = typeof d === 'string' ? d.trim() : d
@@ -180,10 +174,3 @@ async function load() {
 
 onMounted(load)
 </script>
-
-<style scoped>
-.compact-table :deep(th),
-.compact-table :deep(td) {
-  padding: 4px 8px;
-}
-</style>

@@ -1,79 +1,44 @@
 <template>
-  <v-app>
-    <v-app-bar color="primary" density="compact">
-      <v-app-bar-title>성능 테스트</v-app-bar-title>
-      <v-spacer />
-      <v-btn to="/" variant="text">홈</v-btn>
-      <v-btn to="/tests" variant="text">테스트 목록</v-btn>
-      <v-btn to="/runs" variant="text">실행 목록</v-btn>
-    </v-app-bar>
-    <v-main>
-      <v-container fluid class="py-3 px-0">
+  <div class="app-root">
+    <header class="app-shell">
+      <div class="app-shell__left">
+        <router-link to="/" class="app-title app-title-link">성능 테스트</router-link>
+        <nav class="app-shell__nav" aria-label="주요 메뉴">
+          <router-link to="/" class="app-nav-link" exact-active-class="app-nav-link--active">홈</router-link>
+          <router-link to="/tests" class="app-nav-link" active-class="app-nav-link--active">테스트 목록</router-link>
+          <router-link to="/runs" class="app-nav-link" active-class="app-nav-link--active">실행 목록</router-link>
+        </nav>
+      </div>
+      <div class="app-shell__right">
+        <button type="button" class="btn btn-icon" aria-label="테마 전환" @click="onToggleTheme">
+          <UiIcon :icon="isDark ? 'mdi-weather-sunny' : 'mdi-weather-night'" size="20" />
+        </button>
+      </div>
+    </header>
+    <main class="app-main-area">
+      <div class="app-container">
         <router-view />
-      </v-container>
-    </v-main>
-  </v-app>
+      </div>
+    </main>
+  </div>
 </template>
 
 <script setup>
+import { ref, computed, onMounted } from 'vue'
+import { initTheme, toggleTheme } from './utils/theme'
+import UiIcon from './components/UiIcon.vue'
+
+const theme = ref('dark')
+
+onMounted(() => {
+  initTheme()
+  theme.value = document.documentElement.dataset.theme || 'dark'
+})
+
+function onToggleTheme() {
+  toggleTheme()
+  theme.value = document.documentElement.dataset.theme || 'dark'
+}
+
+const isDark = computed(() => theme.value === 'dark')
 </script>
-
-<style>
-/* v-card hover: 연한 노란색 (전체 공통) */
-.v-card {
-  position: relative;
-  overflow: hidden;
-}
-.v-card:hover::before {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: 0;
-  background-color: #fffde7;
-  opacity: 0.7;
-  pointer-events: none;
-}
-.v-card > * {
-  position: relative;
-  z-index: 1;
-}
-
-/* 툴팁 가독성: 밝은 배경 + 진한 글씨 */
-.v-tooltip .v-overlay__content {
-  background: #fff !important;
-  color: #1a1a1a !important;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
-}
-/* 탭 호버 시: 우리가 밝은 레이어를 덮고, 글씨 강제로 진하게 */
-.v-tabs .v-tab {
-  position: relative;
-}
-.v-tabs .v-tab:hover::after {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  background: #e0e0e0;
-  z-index: 0;
-  border-radius: 4px;
-  pointer-events: none;
-}
-.v-tabs .v-tab .v-btn__content,
-.v-tabs .v-tab .v-icon,
-.v-tabs .v-tab span,
-.v-tabs .v-tab label {
-  position: relative;
-  z-index: 1;
-}
-.v-tabs .v-tab:hover .v-btn__content,
-.v-tabs .v-tab:hover .v-icon,
-.v-tabs .v-tab:hover span,
-.v-tabs .v-tab:hover label {
-  color: #1a1a1a !important;
-}
-.v-tabs .v-tab:hover .v-btn__overlay {
-  opacity: 0 !important;
-}
-</style>

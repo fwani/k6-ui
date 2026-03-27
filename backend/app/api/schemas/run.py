@@ -17,6 +17,11 @@ class StartRunRequest(BaseModel):
         alias="requestHeaderOverrides",
         description="실행 시에만 대상 요청 헤더에 합침. 테스트 저장 헤더보다 우선.",
     )
+    show_browser: bool = Field(
+        False,
+        alias="showBrowser",
+        description="engine=browser 일 때만: Chromium 창을 띄움(로컬 API·GUI 또는 DISPLAY/xvfb 필요).",
+    )
 
     @field_validator("request_header_overrides", mode="before")
     @classmethod

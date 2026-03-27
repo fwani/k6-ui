@@ -23,7 +23,10 @@ VU_PLACEHOLDER = "{{VU}}"
 
 from app.config import INFLUXDB_URL
 from app.models.db import PerformanceTest
-from app.services.error_page_rules import parse_error_rules_from_test
+from app.services.error_page_rules import (
+    parse_error_rules_from_list,
+    parse_error_rules_from_test,
+)
 
 
 class K6NotFoundError(Exception):
@@ -157,17 +160,79 @@ def _parse_step_query_params(raw_qp: object) -> list:
     return []
 
 
+def _parse_scenario_poll(raw: object) -> dict | None:
+    """DB/요청 JSON의 poll → k6 STEPS용 camelCase dict. 유효하지 않으면 None."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        iv = float(raw.get("intervalSeconds", raw.get("interval_seconds")))
+        md = float(raw.get("maxDurationSeconds", raw.get("max_duration_seconds")))
+    except (TypeError, ValueError):
+        return None
+    if not (0.1 <= iv <= 60 and 0.5 <= md <= 600):
+        return None
+    out: dict = {"intervalSeconds": iv, "maxDurationSeconds": md}
+    ujp = raw.get("untilJsonPath") or raw.get("until_json_path")
+    if ujp is not None and str(ujp).strip():
+        out["untilJsonPath"] = str(ujp).strip()
+    ueq = raw.get("untilEquals")
+    if ueq is None:
+        ueq = raw.get("until_equals")
+    if ueq is not None:
+        out["untilEquals"] = str(ueq)
+    usi = raw.get("untilStatusIn") or raw.get("until_status_in")
+    if isinstance(usi, list) and usi:
+        try:
+            out["untilStatusIn"] = [int(x) for x in usi]
+        except (TypeError, ValueError):
+            return None
+    wjp = raw.get("whileJsonPath") or raw.get("while_json_path")
+    if wjp is not None and str(wjp).strip():
+        out["whileJsonPath"] = str(wjp).strip()
+    weq_w = raw.get("whileEquals")
+    if weq_w is None:
+        weq_w = raw.get("while_equals")
+    if weq_w is not None:
+        out["whileEquals"] = str(weq_w)
+    if out.get("whileJsonPath") and "whileEquals" not in out:
+        return None
+    if "whileEquals" in out and not out.get("whileJsonPath"):
+        return None
+    has_j = bool(out.get("untilJsonPath")) and "untilEquals" in out
+    has_s = bool(out.get("untilStatusIn"))
+    if not has_j and not has_s:
+        return None
+    if out.get("untilJsonPath") and "untilEquals" not in out:
+        return None
+    return out
+
+
 def _steps_payload_need_per_vu(steps_payload: list[dict]) -> bool:
     for s in steps_payload:
         if _contains_vu_placeholder(s.get("urlTemplate")):
             return True
         if _contains_vu_placeholder(s.get("bodyTemplate")):
             return True
+        if _contains_vu_placeholder(s.get("multipartFilenameTemplate") or ""):
+            return True
+        for row in s.get("multipartFields") or []:
+            if isinstance(row, dict) and _contains_vu_placeholder(str(row.get("value", ""))):
+                return True
         for v in (s.get("headers") or {}).values():
             if _contains_vu_placeholder(str(v)):
                 return True
         for item in s.get("queryParams") or []:
             if isinstance(item, dict) and _contains_vu_placeholder(str(item.get("value", ""))):
+                return True
+        poll = s.get("poll")
+        if isinstance(poll, dict):
+            if _contains_vu_placeholder(str(poll.get("untilEquals") or "")):
+                return True
+            if _contains_vu_placeholder(str(poll.get("untilJsonPath") or "")):
+                return True
+            if _contains_vu_placeholder(str(poll.get("whileEquals") or "")):
+                return True
+            if _contains_vu_placeholder(str(poll.get("whileJsonPath") or "")):
                 return True
     return False
 
@@ -222,15 +287,68 @@ def _build_k6_scenario_step_payloads(test: PerformanceTest) -> tuple[list[dict],
                         "path": str(cap_raw["path"]).strip(),
                         "var": v_cap,
                     }
-        entry: dict = {
-            "name": name,
-            "method": method,
-            "urlTemplate": url,
-            "queryParams": qp,
-            "headers": headers,
-            "bodyTemplate": body,
-            "capture": capture,
-        }
+        mp_raw = raw.get("multipart")
+        multipart_fp = ""
+        multipart_ff = ""
+        multipart_fn = ""
+        multipart_ct = ""
+        multipart_fields_list: list[dict] = []
+        is_multipart = False
+        if isinstance(mp_raw, dict):
+            multipart_fp = str(mp_raw.get("filePath") or mp_raw.get("file_path") or "").strip()
+            multipart_ff = str(
+                mp_raw.get("fileField")
+                or mp_raw.get("file_field")
+                or mp_raw.get("partName")
+                or ""
+            ).strip()
+            if multipart_fp and multipart_ff:
+                is_multipart = True
+                fn = mp_raw.get("filename")
+                multipart_fn = "" if fn is None else str(fn).strip()
+                ct = mp_raw.get("contentType") or mp_raw.get("content_type")
+                multipart_ct = "" if ct is None else str(ct).strip()
+                fields = mp_raw.get("fields")
+                if isinstance(fields, dict):
+                    for k, v in fields.items():
+                        kk = str(k).strip()
+                        if not kk:
+                            continue
+                        multipart_fields_list.append(
+                            {"key": kk, "value": "" if v is None else str(v)}
+                        )
+        if is_multipart:
+            headers = {
+                k: v
+                for k, v in headers.items()
+                if str(k).strip().lower() != "content-type"
+            }
+        if is_multipart:
+            entry: dict = {
+                "name": name,
+                "method": method,
+                "urlTemplate": url,
+                "queryParams": qp,
+                "headers": headers,
+                "bodyMode": "multipart",
+                "bodyTemplate": "",
+                "_multipartFilePath": multipart_fp,
+                "multipartFileField": multipart_ff,
+                "multipartFilenameTemplate": multipart_fn,
+                "multipartContentType": multipart_ct,
+                "multipartFields": multipart_fields_list,
+                "capture": capture,
+            }
+        else:
+            entry = {
+                "name": name,
+                "method": method,
+                "urlTemplate": url,
+                "queryParams": qp,
+                "headers": headers,
+                "bodyTemplate": body,
+                "capture": capture,
+            }
         sas = raw.get("sleepAfterSeconds")
         if sas is None:
             sas = raw.get("sleep_after_seconds")
@@ -241,6 +359,16 @@ def _build_k6_scenario_step_payloads(test: PerformanceTest) -> tuple[list[dict],
                     entry["sleepAfterSeconds"] = sf
             except (TypeError, ValueError):
                 pass
+        poll_obj = _parse_scenario_poll(raw.get("poll"))
+        if poll_obj:
+            entry["poll"] = poll_obj
+        else:
+            entry.pop("poll", None)
+        step_err = parse_error_rules_from_list(
+            raw.get("errorPageRules") or raw.get("error_page_rules")
+        )
+        if step_err:
+            entry["errorPageRules"] = step_err
         out.append(entry)
     if not out:
         return None
@@ -272,9 +400,20 @@ def _render_scenario_script(
     *,
     options_js: str,
     sleep_s: float,
-    error_rules_js: str | None,
+    error_rules_js: str,
 ) -> str:
-    steps_json = json.dumps(steps_payload, ensure_ascii=False)
+    steps_for_json: list[dict] = []
+    multipart_open_literals: list[str] = []
+    mp_idx = 0
+    for s in steps_payload:
+        s2 = {k: v for k, v in s.items() if k != "_multipartFilePath"}
+        if s.get("bodyMode") == "multipart":
+            path = s.get("_multipartFilePath") or ""
+            multipart_open_literals.append(json.dumps(path))
+            s2["multipartOpenIndex"] = mp_idx
+            mp_idx += 1
+        steps_for_json.append(s2)
+    steps_json = json.dumps(steps_for_json, ensure_ascii=False)
     vu_offset = _vu_start_from_test(test) - 1
     ctx = {
         "steps_json": steps_json,
@@ -283,6 +422,7 @@ def _render_scenario_script(
         "sleep_s": sleep_s,
         "error_rules_js": error_rules_js,
         "vu_offset": vu_offset,
+        "multipart_open_literals": multipart_open_literals,
     }
     return _K6_SCENARIO_TEMPLATE.render(**ctx)
 
@@ -306,10 +446,42 @@ def get_request_args_json(test: PerformanceTest) -> str | None:
             headers = dict(s0["headers"])
             if per_vu:
                 headers = {k: _replace_vu_placeholder(v, vu_rep) for k, v in headers.items()}
-            return json.dumps(
-                {"url": url, "method": method, "headers": headers, "body": body},
-                ensure_ascii=False,
-            )
+            if s0.get("bodyMode") == "multipart":
+                mfields = []
+                for row in s0.get("multipartFields") or []:
+                    if not isinstance(row, dict):
+                        continue
+                    k = row.get("key")
+                    v = row.get("value")
+                    if k is None:
+                        continue
+                    vv = "" if v is None else str(v)
+                    if per_vu:
+                        vv = _replace_vu_placeholder(vv, vu_rep)
+                    mfields.append({"key": str(k), "value": vv})
+                fn_t = s0.get("multipartFilenameTemplate") or ""
+                if per_vu:
+                    fn_t = _replace_vu_placeholder(str(fn_t), vu_rep)
+                mp_payload = {
+                    "url": url,
+                    "method": method,
+                    "headers": headers,
+                    "bodyMode": "multipart",
+                    "multipart": {
+                        "filePath": s0.get("_multipartFilePath"),
+                        "fileField": s0.get("multipartFileField"),
+                        "filenameTemplate": fn_t,
+                        "contentType": s0.get("multipartContentType") or "",
+                        "fields": mfields,
+                    },
+                }
+                if s0.get("poll"):
+                    mp_payload["poll"] = s0["poll"]
+                return json.dumps(mp_payload, ensure_ascii=False)
+            plain = {"url": url, "method": method, "headers": headers, "body": body}
+            if s0.get("poll"):
+                plain["poll"] = s0["poll"]
+            return json.dumps(plain, ensure_ascii=False)
         method = (getattr(test, "http_method", None) or "GET").upper()
         base_url = (getattr(test, "target_url", None) or "").strip() or "https://httpbin.org/get"
         query_params = getattr(test, "query_params", None)
@@ -391,12 +563,20 @@ def generate_script(
                 }
                 for step in steps_payload
             ]
+        for step in steps_payload:
+            if step.get("bodyMode") == "multipart":
+                step["headers"] = {
+                    k: v
+                    for k, v in (step.get("headers") or {}).items()
+                    if str(k).strip().lower() != "content-type"
+                }
+        default_rules_js = json.dumps(rules, ensure_ascii=False)
         return _render_scenario_script(
             test,
             steps_payload,
             options_js=options_js,
             sleep_s=sleep_s,
-            error_rules_js=error_rules_js,
+            error_rules_js=default_rules_js,
         )
 
     method = (getattr(test, "http_method", None) or "GET").upper()

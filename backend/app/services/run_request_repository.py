@@ -105,6 +105,9 @@ def get_screenshot(db: Session, run_id: str, seq: int) -> bytes | None:
 def aggregate_step_metrics(db: Session, run_id: str) -> list[dict]:
     """request_args.stepIndex 별 집계. SQLite json_extract 전용. stepIndex 없는 행은 제외.
 
+    폴링 스텝(구버전): 요청마다 pollAttempt 가 찍혀 N건으로 집계되던 행은 제외하고, 스텝당 1건만 반영.
+    신버전은 pollTotalAttempts 만 있는 단일 __REQ__ 행.
+
     행 실패 정의: failed(참) 또는 status_code가 2xx 아님 (runs._compute_overall_failure_rate 와 동일).
     """
     if getattr(db.bind, "dialect", None) is None or db.bind.dialect.name != "sqlite":
@@ -127,6 +130,10 @@ def aggregate_step_metrics(db: Session, run_id: str) -> list[dict]:
           AND request_args IS NOT NULL
           AND trim(request_args) != ''
           AND json_extract(request_args, '$.stepIndex') IS NOT NULL
+          AND NOT (
+            json_extract(request_args, '$.poll') = 1
+            AND json_type(request_args, '$.pollAttempt') IS NOT NULL
+          )
         GROUP BY CAST(json_extract(request_args, '$.stepIndex') AS INTEGER)
         ORDER BY CAST(json_extract(request_args, '$.stepIndex') AS INTEGER)
     """)

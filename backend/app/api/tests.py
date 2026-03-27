@@ -5,7 +5,13 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
-from app.api.schemas.test import TestCreate, TestResponse, TestUpdate, scenario_steps_to_json
+from app.api.schemas.test import (
+    TestCreate,
+    TestResponse,
+    TestUpdate,
+    browser_actions_to_json,
+    scenario_steps_to_json,
+)
 from app.database import get_db
 from app.models.db import PerformanceTest
 from app.services import test_repository
@@ -13,20 +19,26 @@ from app.services.error_page_rules import (
     resolve_error_rules_for_update,
     serialize_error_rules_for_db,
 )
-from app.services.test_repository import HTTP_SCENARIO_UNCHANGED
+from app.services.test_repository import (
+    BROWSER_ACTIONS_UNCHANGED,
+    HTTP_SCENARIO_UNCHANGED,
+    TAGS_UNCHANGED,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/tests", tags=["tests"])
 
 
 def _to_response(orm: PerformanceTest) -> dict:
-    return TestResponse.model_validate(orm).model_dump(by_alias=True)
+    # mode='json': datetime 등 JSON 직렬화 가능한 형태로 통일
+    return TestResponse.model_validate(orm).model_dump(by_alias=True, mode="json")
 
 
 @router.post("", response_model=dict, status_code=201)
 def create_test(body: TestCreate, db: Session = Depends(get_db)):
     """POST /tests. 400 on validation (URL format, required)."""
     scenario_json = scenario_steps_to_json(body.http_scenario) if body.http_scenario else None
+    browser_json = browser_actions_to_json(body.browser_actions)
     er_json, er_pat, er_mode = serialize_error_rules_for_db(body.error_page_rules or [])
     t = test_repository.create(
         db,
@@ -49,16 +61,25 @@ def create_test(body: TestCreate, db: Session = Depends(get_db)):
         error_page_pattern=er_pat,
         error_page_match_mode=er_mode,
         http_scenario=scenario_json,
+        browser_actions=browser_json,
+        tags=body.tags,
     )
     logger.info("test_created test_id=%s name=%s", t.id, t.name)
     return _to_response(t)
 
 
 @router.get("", response_model=dict)
-def list_tests(db: Session = Depends(get_db)):
-    """GET /tests → { items: [ Test ] }."""
-    items = test_repository.list_all(db)
+def list_tests(tag: str | None = None, db: Session = Depends(get_db)):
+    """GET /tests → { items: [ Test ] }. 선택 쿼리 tag= 로 해당 태그가 정확히 포함된 테스트만."""
+    items = test_repository.list_all(db, tag=tag)
     return {"items": [_to_response(x) for x in items]}
+
+
+@router.get("/tags", response_model=dict)
+def list_test_tags(db: Session = Depends(get_db)):
+    """GET /tests/tags → { items: [ str ] }. DB에 있는 태그 이름 목록(자동완성용)."""
+    names = test_repository.list_all_tag_names(db)
+    return {"items": names}
 
 
 @router.get("/{id}", response_model=dict)
@@ -86,12 +107,21 @@ def update_test(id: str, body: TestUpdate, db: Session = Depends(get_db)):
         )
     else:
         http_scenario_kw = HTTP_SCENARIO_UNCHANGED
+    if new_engine == "http":
+        browser_actions_kw: object | str | None = None
+    elif "browser_actions" in patch:
+        browser_actions_kw = browser_actions_to_json(body.browser_actions)
+    else:
+        browser_actions_kw = BROWSER_ACTIONS_UNCHANGED
     target_kw = body.target_url
     method_kw = body.http_method
     if "http_scenario" in patch and body.http_scenario:
         target_kw = body.http_scenario[0].url.strip()
         method_kw = body.http_scenario[0].method
     error_rules_kw = resolve_error_rules_for_update(body, t)
+    tags_kw: object = TAGS_UNCHANGED
+    if "tags" in patch:
+        tags_kw = body.tags
     test_repository.update(
         db,
         t,
@@ -112,6 +142,8 @@ def update_test(id: str, body: TestUpdate, db: Session = Depends(get_db)):
         vu_start=body.vu_start,
         error_rules=error_rules_kw,
         http_scenario=http_scenario_kw,
+        browser_actions=browser_actions_kw,
+        tags=tags_kw,
     )
     return _to_response(t)
 
