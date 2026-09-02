@@ -1,0 +1,52 @@
+services:
+  api:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      DATABASE_URL: "sqlite:////app/data/app.db"
+      GRAFANA_DASHBOARD_URL: "http://grafana:3001/d/k6-load-testing/k6-load-testing-results"
+      INFLUXDB_URL: "http://influxdb:8086"
+      GRAPHIO_K6_FIXTURE_DIR: "/app/data/k6_fixtures"
+    volumes:
+      - api_data:/app/data
+    depends_on:
+      - influxdb
+
+  ui:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    ports:
+      - "3000:80"
+
+  influxdb:
+    image: influxdb:1.8-alpine
+    platform: linux/amd64
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb
+    environment:
+      INFLUXDB_DB: k6
+
+  grafana:
+    image: grafana/grafana:10.2.2
+    ports:
+      - "3001:3000"
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on:
+      - influxdb
+
+volumes:
+  api_data:
+  influxdb_data:
+  grafana_data:

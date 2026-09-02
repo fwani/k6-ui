@@ -1,0 +1,4 @@
+Alembic migrations. Run from backend/:
+
+  uv run alembic upgrade head   # apply all
+  uv run alembic revision -m "msg" --autogenerate  # new revision

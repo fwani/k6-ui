@@ -1,0 +1,17 @@
+# Grafana InfluxDB 데이터 소스 프로비저닝 (FR-005: 대시보드 시각화)
+# k6 메트릭 저장소. InfluxDB 1.x 전용 → InfluxQL 사용 (Flux 아님)
+apiVersion: 1
+
+datasources:
+  - name: InfluxDB
+    uid: influxdb-k6
+    type: influxdb
+    access: proxy
+    url: http://influxdb:8086
+    database: k6
+    isDefault: true
+    editable: false
+    jsonData:
+      dbName: k6
+      httpMode: POST
+      timeInterval: "1s"

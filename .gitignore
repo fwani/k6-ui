@@ -1,0 +1,41 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+*.egg-info/
+dist/
+*.egg
+
+# Node / Frontend
+node_modules/
+dist/
+build/
+*.log
+.npm
+.eslintcache
+
+# Env
+.env
+.env.*
+!.env.example
+
+# IDE / OS
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+.vscode/
+.idea/
+
+# Backend runtime data (screenshots etc.)
+backend/data/
+
+# Test / coverage
+.coverage
+htmlcov/
+.pytest_cache/
+coverage/
+.git-credentials-*
+*.db
