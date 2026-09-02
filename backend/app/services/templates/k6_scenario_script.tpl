@@ -337,7 +337,9 @@ export default function () {
     const respondedAt = new Date(reqEndMs).toISOString().replace(/(\.\d+)Z$/i, (_, frac) => (frac + '000000').slice(0, 7) + 'Z');
     const wallMs = reqEndMs - reqStartMs;
     const k6Dur = res && res.timings && typeof res.timings.duration === 'number' ? res.timings.duration : null;
-    const duration = wallMs;
+    // 응답시간은 k6 HTTP 측정값(res.timings.duration) 사용 — 테스터 측 스케줄링/로깅 지연(wallMs) 배제.
+    // k6Dur 가 없을 때만 wallMs 로 폴백.
+    const duration = (k6Dur != null) ? k6Dur : wallMs;
     applyStepCapture(step.capture, res, vu, vars);
 {% endraw %}
     const _urlStr = res && res.url != null ? String(res.url) : String(url);

@@ -51,8 +51,8 @@ class PerformanceTest(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    engine: Mapped[str] = mapped_column(String(32), nullable=False, default="http")  # http=k6, browser=Playwright
-    target_url: Mapped[str] = mapped_column(String(2048), nullable=False)  # base URL (no query)
+    engine: Mapped[str] = mapped_column(String(32), nullable=False, default="http")  # http=k6, browser=Playwright, db=k6+xk6-sql
+    target_url: Mapped[str] = mapped_column(String(2048), nullable=False)  # http/browser: base URL. db: 연결 문자열(DSN)
     query_params: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON array [{"key":"k","value":"v"},...]
     http_method: Mapped[str] = mapped_column(String(16), nullable=False)
     request_body: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -75,6 +75,9 @@ class PerformanceTest(Base):
     http_scenario: Mapped[str | None] = mapped_column(Text, nullable=True)
     # browser 전용: 로드 후 Playwright 액션 JSON 배열 (wait_selector | click | sleep).
     browser_actions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # db 전용: xk6-sql 드라이버 ID(postgres 등)와 실행할 SQL. DSN은 target_url에 저장.
+    db_driver: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    db_query: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=datetime.utcnow, onupdate=datetime.utcnow

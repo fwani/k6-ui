@@ -13,7 +13,13 @@ from app.services.error_page_rules import ERROR_RULES_UNCHANGED
 # update(..., http_scenario=...) 에서 생략 시 DB 값 유지
 HTTP_SCENARIO_UNCHANGED = object()
 BROWSER_ACTIONS_UNCHANGED = object()
+DB_FIELD_UNCHANGED = object()
 TAGS_UNCHANGED = object()
+
+
+def _normalize_engine(engine: str | None) -> str:
+    e = (engine or "").strip().lower()
+    return e if e in ("http", "browser", "db") else "http"
 
 
 def _get_or_create_tag(db: Session, name: str) -> Tag:
@@ -58,9 +64,11 @@ def create(
     error_page_match_mode: str = "contains",
     http_scenario: str | None = None,
     browser_actions: str | None = None,
+    db_driver: str | None = None,
+    db_query: str | None = None,
     tags: list[str] | None = None,
 ) -> PerformanceTest:
-    engine_val = "browser" if (engine or "").strip().lower() == "browser" else "http"
+    engine_val = _normalize_engine(engine)
     t = PerformanceTest(
         id=str(uuid.uuid4()),
         name=name,
@@ -83,6 +91,8 @@ def create(
         error_page_match_mode=(error_page_match_mode if error_page_match_mode in ("contains", "not_contains") else "contains"),
         http_scenario=http_scenario,
         browser_actions=browser_actions,
+        db_driver=db_driver,
+        db_query=db_query,
     )
     db.add(t)
     db.flush()
@@ -145,6 +155,8 @@ def update(
     error_rules: Any = ERROR_RULES_UNCHANGED,
     http_scenario: Any = HTTP_SCENARIO_UNCHANGED,
     browser_actions: Any = BROWSER_ACTIONS_UNCHANGED,
+    db_driver: Any = DB_FIELD_UNCHANGED,
+    db_query: Any = DB_FIELD_UNCHANGED,
     tags: Any = TAGS_UNCHANGED,
 ) -> PerformanceTest:
     if name is not None:
@@ -152,7 +164,7 @@ def update(
     if target_url is not None:
         t.target_url = target_url
     if engine is not None:
-        t.engine = "browser" if (engine or "").strip().lower() == "browser" else "http"
+        t.engine = _normalize_engine(engine)
     if query_params is not None:
         t.query_params = query_params
     if http_method is not None:
@@ -186,6 +198,10 @@ def update(
         t.http_scenario = http_scenario
     if browser_actions is not BROWSER_ACTIONS_UNCHANGED:
         t.browser_actions = browser_actions
+    if db_driver is not DB_FIELD_UNCHANGED:
+        t.db_driver = db_driver
+    if db_query is not DB_FIELD_UNCHANGED:
+        t.db_query = db_query
     if tags is not TAGS_UNCHANGED:
         _sync_tags_to_test(db, t, tags)
     db.commit()

@@ -54,33 +54,17 @@ def _compute_overall_failure_rate(
     return (bad / n) if n else float(http_failure_rate)
 
 
-def _align_k6_summary_with_stored_rows(
-    summary: dict,
-    request_responses: list[dict] | None,
-    exec_sec_wall: float,
-) -> dict:
-    """k6 summary는 모든 HTTP를 포함. 저장 __REQ__ 행·벽시계 실행 시간에 맞춘다."""
+def _finalize_http_summary(summary: dict, exec_sec_wall: float) -> dict:
+    """http 엔진 결과 확정.
+
+    응답시간(avg/max)·요청수·TPS는 k6 요약 메트릭(http_req_duration, http_reqs)을
+    그대로 사용한다. 저장 __REQ__ 행은 10,000건에서 잘리고 poll 스텝은 벽시계 시간을
+    담으므로, 통계 집계에 쓰면 편향된다(상세 테이블 표시용으로만 사용).
+    실행 시간만 실제 벽시계로 보정한다.
+    """
     out = dict(summary)
-    rows = request_responses or []
     if exec_sec_wall > 0:
         out["execution_time"] = float(exec_sec_wall)
-    if not rows:
-        return out
-    out["request_count"] = len(rows)
-    times: list[float] = []
-    for r in rows:
-        t = r.get("response_time_ms")
-        if t is None:
-            continue
-        try:
-            times.append(float(t))
-        except (TypeError, ValueError):
-            continue
-    if times:
-        out["avg_response_time"] = sum(times) / len(times)
-        out["max_response_time"] = max(times)
-    if exec_sec_wall > 0:
-        out["tps_or_rps"] = len(rows) / float(exec_sec_wall)
     return out
 
 
@@ -116,10 +100,8 @@ def _on_run_complete(
                 http_fr = float(summary["failure_rate"])
                 overall_fr = _compute_overall_failure_rate(request_responses, http_fr)
                 engine = (getattr(r, "engine", None) or "http").strip().lower()
-                if engine == "http":
-                    summary = _align_k6_summary_with_stored_rows(
-                        summary, request_responses, exec_sec
-                    )
+                if engine in ("http", "db"):
+                    summary = _finalize_http_summary(summary, exec_sec)
                 result_repository.create(
                     db,
                     run_id=run_id,
@@ -166,7 +148,7 @@ def start_run(
     if not test:
         raise HTTPException(status_code=404, detail="테스트를 찾을 수 없습니다.")
     engine = (getattr(test, "engine", None) or "http").strip().lower()
-    if engine not in ("http", "browser"):
+    if engine not in ("http", "browser", "db"):
         engine = "http"
     running = run_repository.get_running(db)
     if running:

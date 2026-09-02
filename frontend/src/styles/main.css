@@ -365,6 +365,15 @@ body {
   background: var(--accent-info);
 }
 
+.pill-db {
+  background: rgba(245, 158, 11, 0.12);
+  color: #b45309;
+}
+
+.pill-db .pill-dot {
+  background: #f59e0b;
+}
+
 .pill-finished {
   background: rgba(0, 201, 122, 0.12);
   color: var(--accent-success);

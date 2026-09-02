@@ -108,8 +108,10 @@ async function loadTest() {
   testError.value = ''
   try {
     test.value = await get(`tests/${testId.value}`)
-    const e = test.value?.engine === 'browser' ? 'browser' : 'http'
-    engineLabel.value = e === 'browser' ? '브라우저 (렌더링)' : 'k6 (HTTP)'
+    const e = test.value?.engine
+    engineLabel.value = e === 'browser'
+      ? '브라우저 (렌더링)'
+      : (e === 'db' ? 'DB 쿼리 (k6 + xk6-sql)' : 'k6 (HTTP)')
   } catch (err) {
     testError.value = getApiErrorMessage(err)
   } finally {

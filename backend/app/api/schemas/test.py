@@ -20,6 +20,9 @@ from app.services.error_page_rules import serialize_error_rules_for_db
 
 _VAR_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
+# engine=db에서 지원하는 xk6-sql 드라이버 ID. Dockerfile의 xk6 build --with 와 일치해야 함.
+SUPPORTED_DB_DRIVERS = frozenset({"postgres"})
+
 _TAG_MAX_LEN = 32
 _TAG_MAX_COUNT = 32
 
@@ -437,9 +440,9 @@ class TestCreate(BaseModel):
 
     name: str = Field(..., min_length=1)
     engine: str = Field("http", alias="engine")  # http=k6, browser=Playwright
-    target_url: str = Field(..., alias="targetUrl")  # base URL (no query)
+    target_url: str = Field(..., alias="targetUrl")  # http/browser: base URL. db: DSN
     query_params: str | None = Field(None, alias="queryParams")  # JSON array [{"key":"k","value":"v"},...]
-    http_method: str = Field(..., alias="httpMethod")
+    http_method: str = Field("GET", alias="httpMethod")  # db 엔진에서는 미사용(QUERY로 대체)
     request_body: str | None = Field(None, alias="requestBody")
     headers: str | None = Field(None, alias="headers")
     vus: int = Field(..., gt=0, alias="vus")
@@ -463,6 +466,8 @@ class TestCreate(BaseModel):
     browser_actions: list[BrowserActionStep] | None = Field(
         None, alias="browserActions"
     )
+    db_driver: str | None = Field(None, alias="dbDriver")  # engine=db: xk6-sql 드라이버 ID
+    db_query: str | None = Field(None, alias="dbQuery")  # engine=db: 실행할 SQL
     tags: list[str] = Field(default_factory=list, alias="tags")
 
     @field_validator("tags", mode="before")
@@ -481,6 +486,28 @@ class TestCreate(BaseModel):
 
     @model_validator(mode="after")
     def validate_scenario_or_single_url(self) -> TestCreate:
+        if (self.engine or "http").strip().lower() == "db":
+            dsn = (self.target_url or "").strip()
+            if not dsn:
+                raise ValueError("DB 연결 문자열(DSN)을 입력하세요. (예: postgres://user:pass@host:5432/db)")
+            query = (self.db_query or "").strip()
+            if not query:
+                raise ValueError("실행할 SQL 쿼리를 입력하세요.")
+            driver = (self.db_driver or "postgres").strip().lower()
+            if driver not in SUPPORTED_DB_DRIVERS:
+                raise ValueError(
+                    f"지원하지 않는 DB 드라이버입니다: {driver}. (지원: {', '.join(sorted(SUPPORTED_DB_DRIVERS))})"
+                )
+            return self.model_copy(
+                update={
+                    "target_url": dsn,
+                    "db_query": query,
+                    "db_driver": driver,
+                    "http_method": "QUERY",
+                    "http_scenario": None,
+                    "browser_actions": None,
+                }
+            )
         steps = self.http_scenario
         if steps:
             if (self.engine or "http").strip().lower() == "browser":
@@ -570,6 +597,8 @@ class TestUpdate(BaseModel):
     browser_actions: list[BrowserActionStep] | None = Field(
         None, alias="browserActions"
     )
+    db_driver: str | None = Field(None, alias="dbDriver")
+    db_query: str | None = Field(None, alias="dbQuery")
     tags: list[str] | None = Field(None, alias="tags")
 
     @field_validator("tags", mode="before")
@@ -581,17 +610,20 @@ class TestUpdate(BaseModel):
             return []
         return normalize_tag_list([str(x) for x in v])
 
-    @field_validator("target_url")
-    @classmethod
-    def target_url_format(cls, v: str | None) -> str | None:
+    @model_validator(mode="after")
+    def validate_target_url(self) -> TestUpdate:
+        """target_url 형식 검증. engine=db이면 DSN이므로 http(s) URL 강제하지 않음."""
+        v = self.target_url
         if v is None:
-            return None
-        v = (v or "").strip()
+            return self
+        v = v.strip()
         if not v:
             raise ValueError("대상 URL을 입력하세요.")
+        if (self.engine or "").strip().lower() == "db":
+            return self.model_copy(update={"target_url": v})
         if not re.match(r"^https?://[^\s]+$", v):
             raise ValueError("유효한 URL 형식이 아닙니다. (예: https://example.com)")
-        return v
+        return self.model_copy(update={"target_url": v})
 
     @model_validator(mode="after")
     def validate_scenario(self) -> TestUpdate:
@@ -634,6 +666,8 @@ class TestResponse(BaseModel):
     error_page_match_mode: str = Field("contains", alias="errorPageMatchMode")
     http_scenario: list[Any] | None = Field(None, alias="httpScenario")
     browser_actions: list[Any] | None = Field(None, alias="browserActions")
+    db_driver: str | None = Field(None, alias="dbDriver")
+    db_query: str | None = Field(None, alias="dbQuery")
     tags: list[str] = Field(default_factory=list, alias="tags")
     created_at: datetime = Field(alias="createdAt")
     updated_at: datetime = Field(alias="updatedAt")

@@ -21,6 +21,7 @@ from app.services.error_page_rules import (
 )
 from app.services.test_repository import (
     BROWSER_ACTIONS_UNCHANGED,
+    DB_FIELD_UNCHANGED,
     HTTP_SCENARIO_UNCHANGED,
     TAGS_UNCHANGED,
 )
@@ -62,6 +63,8 @@ def create_test(body: TestCreate, db: Session = Depends(get_db)):
         error_page_match_mode=er_mode,
         http_scenario=scenario_json,
         browser_actions=browser_json,
+        db_driver=body.db_driver,
+        db_query=body.db_query,
         tags=body.tags,
     )
     logger.info("test_created test_id=%s name=%s", t.id, t.name)
@@ -99,7 +102,7 @@ def update_test(id: str, body: TestUpdate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="테스트를 찾을 수 없습니다.")
     patch = body.model_dump(exclude_unset=True)
     new_engine = (body.engine if body.engine is not None else t.engine or "http").strip().lower()
-    if new_engine == "browser":
+    if new_engine in ("browser", "db"):
         http_scenario_kw: object | str | None = None
     elif "http_scenario" in patch:
         http_scenario_kw = (
@@ -107,12 +110,21 @@ def update_test(id: str, body: TestUpdate, db: Session = Depends(get_db)):
         )
     else:
         http_scenario_kw = HTTP_SCENARIO_UNCHANGED
-    if new_engine == "http":
+    if new_engine in ("http", "db"):
         browser_actions_kw: object | str | None = None
     elif "browser_actions" in patch:
         browser_actions_kw = browser_actions_to_json(body.browser_actions)
     else:
         browser_actions_kw = BROWSER_ACTIONS_UNCHANGED
+    if new_engine == "db":
+        db_driver_kw: object | str | None = (
+            (body.db_driver or "postgres").strip().lower() if "db_driver" in patch or body.db_driver else "postgres"
+        )
+        db_query_kw: object | str | None = body.db_query if "db_query" in patch else DB_FIELD_UNCHANGED
+    else:
+        # db 엔진이 아니면 db 전용 필드 비움
+        db_driver_kw = None
+        db_query_kw = None
     target_kw = body.target_url
     method_kw = body.http_method
     if "http_scenario" in patch and body.http_scenario:
@@ -143,6 +155,8 @@ def update_test(id: str, body: TestUpdate, db: Session = Depends(get_db)):
         error_rules=error_rules_kw,
         http_scenario=http_scenario_kw,
         browser_actions=browser_actions_kw,
+        db_driver=db_driver_kw,
+        db_query=db_query_kw,
         tags=tags_kw,
     )
     return _to_response(t)

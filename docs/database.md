@@ -21,8 +21,8 @@ erDiagram
 |------|------------|------|
 | `id` | 문자열 PK | UUID |
 | `name` | 문자열 | 테스트 이름 |
-| `engine` | 문자열 | `http`(k6) 또는 `browser`(Playwright), 기본 `http` |
-| `target_url` | 문자열 | 기본 대상 URL(쿼리 없음). 다단계 시나리오면 1단계 URL과 동기화 |
+| `engine` | 문자열 | `http`(k6)·`browser`(Playwright)·`db`(k6+xk6-sql), 기본 `http` |
+| `target_url` | 문자열 | http/browser: 기본 대상 URL. db: 연결 문자열(DSN). 다단계 시나리오면 1단계 URL과 동기화 |
 | `query_params` | Text, JSON | `[{"key":"k","value":"v"}, ...]` 형태 문자열 |
 | `http_method` | 문자열 | GET/POST 등 |
 | `request_body` | Text | 단일 요청 모드 본문 |
@@ -40,6 +40,8 @@ erDiagram
 | `error_page_match_mode` | 문자열 | 기본 `contains` |
 | `http_scenario` | Text, JSON | k6 다단계 시나리오 배열(비우면 단일 요청 모드) |
 | `browser_actions` | Text, JSON | 브라우저 전용 Playwright 액션 배열 |
+| `db_driver` | 문자열 | db 전용: xk6-sql 드라이버 ID(`postgres`), nullable |
+| `db_query` | Text | db 전용: 반복 실행할 SQL, nullable |
 | `created_at`, `updated_at` | DateTime | 생성·수정 시각 |
 
 ## `test_run`
@@ -50,7 +52,7 @@ erDiagram
 |------|------|
 | `id` | UUID PK |
 | `test_id` | `performance_test.id` FK, CASCADE 삭제 |
-| `engine` | `http` / `browser` |
+| `engine` | `http` / `browser` / `db` |
 | `status` | `Ready` / `Running` / `Finished` / `Failed` |
 | `started_at`, `finished_at` | 실행 구간 |
 | `created_at` | 레코드 생성 시각 |

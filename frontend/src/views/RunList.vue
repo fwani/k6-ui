@@ -47,7 +47,7 @@
             <td>
               <span :class="enginePillClass(r.engine)">
                 <span class="pill-dot" aria-hidden="true" />
-                {{ r.engine === 'browser' ? '브라우저' : 'HTTP' }}
+                {{ engineLabelShort(r.engine) }}
               </span>
             </td>
             <td>
@@ -80,7 +80,7 @@
 <script setup>
 import { ref, computed, onMounted } from 'vue'
 import { get, del, getApiErrorMessage } from '../services/api'
-import { statusPillClass, enginePillClass } from '../utils/statusPill'
+import { statusPillClass, enginePillClass, engineLabelShort } from '../utils/statusPill'
 import UiBtn from '../components/UiBtn.vue'
 import UiProgress from '../components/UiProgress.vue'
 import UiAlert from '../components/UiAlert.vue'

@@ -31,6 +31,10 @@
               <input v-model="form.engine" type="radio" value="browser" />
               브라우저 (렌더링)
             </label>
+            <label>
+              <input v-model="form.engine" type="radio" value="db" />
+              DB 쿼리
+            </label>
           </div>
         </div>
       </div>
@@ -102,7 +106,7 @@
         </div>
       </div>
 
-      <div v-if="form.engine !== 'http'" class="vf-row vf-row--dense align-center mb-2 form-row-nowrap-sm">
+      <div v-if="form.engine === 'browser'" class="vf-row vf-row--dense align-center mb-2 form-row-nowrap-sm">
         <div class="vf-col vf-col-12 vf-col-sm-3 vf-col-md-2 flex-shrink-0">
           <div class="d-flex align-start gap-1">
             <UiSelect
@@ -133,6 +137,46 @@
               <UiIcon icon="mdi-information-outline" size="small" class="label-tip-icon" />
             </UiTooltip>
           </div>
+        </div>
+      </div>
+
+      <div v-if="form.engine === 'db'" class="vf-row vf-row--dense mb-2">
+        <div class="vf-col vf-col-12 vf-col-sm-3 vf-col-md-2 flex-shrink-0 mb-2">
+          <UiSelect
+            v-model="form.dbDriver"
+            :items="['postgres']"
+            hide-details
+            label="DB 드라이버"
+          />
+        </div>
+        <div class="vf-col vf-col-12 vf-col-sm-9 vf-col-md-10 mb-2" style="min-width: 0">
+          <div class="d-flex align-start gap-1">
+            <UiTextField
+              v-model="form.baseUrl"
+              placeholder="postgres://user:pass@host:5432/dbname?sslmode=disable"
+              hide-details="auto"
+              :error-messages="errors.baseUrl ? [errors.baseUrl] : []"
+              label="연결 문자열 (DSN)"
+              class="flex-grow-1"
+            />
+            <UiTooltip text="xk6-sql이 접속할 DB 연결 문자열입니다. 자격증명이 그대로 저장되니 주의하세요.">
+              <UiIcon icon="mdi-information-outline" size="small" class="label-tip-icon" />
+            </UiTooltip>
+          </div>
+        </div>
+        <div class="vf-col vf-col-12">
+          <UiTextarea
+            v-model="form.dbQuery"
+            label="SQL 쿼리"
+            placeholder="SELECT * FROM users WHERE id = 1;"
+            rows="4"
+            auto-grow
+            hide-details="auto"
+            :error-messages="errors.dbQuery ? [errors.dbQuery] : []"
+          />
+          <p class="text-caption text-medium-emphasis mt-1 mb-0">
+            VU마다 이 쿼리를 반복 실행해 실행 시간·TPS·실패율을 측정합니다.
+          </p>
         </div>
       </div>
 
@@ -1490,6 +1534,9 @@ const form = reactive({
   tags: [],
   /** 브라우저 전용: 로드 후 Playwright 단계 (API browserActions) */
   browserActions: [],
+  /** db 전용: xk6-sql 드라이버와 실행할 SQL. DSN은 baseUrl 재사용. */
+  dbDriver: 'postgres',
+  dbQuery: '',
 })
 
 const filteredSuggestions = computed(() => {
@@ -1791,6 +1838,8 @@ function normalizeTestPayload(t) {
     requestDelay: t.requestDelay ?? t.request_delay,
     rampUp: t.rampUp ?? t.ramp_up,
     browserActions: t.browserActions ?? t.browser_actions,
+    dbDriver: t.dbDriver ?? t.db_driver,
+    dbQuery: t.dbQuery ?? t.db_query,
   }
 }
 
@@ -1886,7 +1935,9 @@ function fillFormFromTest(t, clone = false) {
   try {
     t = normalizeTestPayload(t)
     form.name = clone ? `복사 - ${t.name ?? ''}` : (t.name ?? '')
-    form.engine = (t.engine === 'browser' ? 'browser' : 'http')
+    form.engine = (t.engine === 'browser' || t.engine === 'db') ? t.engine : 'http'
+    form.dbDriver = (t.dbDriver ?? 'postgres') || 'postgres'
+    form.dbQuery = t.dbQuery ?? ''
     form.baseUrl = pickTargetUrlFromApi(t)
     form.paramsList = parseQueryParamsToList(t.queryParams ?? '')
     form.httpMethod = t.httpMethod ?? 'GET'
@@ -2053,6 +2104,10 @@ function validate() {
     if (Object.keys(urlErrs).length) e.scenarioUrls = urlErrs
     if (Object.keys(mpErrs).length) e.scenarioMultipart = mpErrs
     if (Object.keys(pollErrs).length) e.scenarioPoll = pollErrs
+  } else if (form.engine === 'db') {
+    const dsn = (form.baseUrl || '').trim()
+    if (!dsn) e.baseUrl = '연결 문자열(DSN)을 입력하세요.'
+    if (!(form.dbQuery && form.dbQuery.trim())) e.dbQuery = '실행할 SQL 쿼리를 입력하세요.'
   } else {
     const base = (form.baseUrl || '').trim()
     if (!base) e.baseUrl = '대상 URL을 입력하세요.'
@@ -2096,20 +2151,22 @@ async function onSubmit() {
   saving.value = true
   try {
     const isHttpK6 = form.engine === 'http'
+    const isDb = form.engine === 'db'
     const scenarioPayload = isHttpK6 ? buildHttpScenarioPayload() : []
     if (isHttpK6 && !scenarioPayload.length) {
       apiError.value = 'HTTP 단계에 URL이 있는 단계가 필요합니다.'
       saving.value = false
       return
     }
+    const engineVal = isDb ? 'db' : (form.engine === 'browser' ? 'browser' : 'http')
     const body = {
       name: form.name.trim(),
-      engine: (form.engine === 'browser' ? 'browser' : 'http'),
+      engine: engineVal,
       targetUrl: isHttpK6 ? scenarioPayload[0].url : (form.baseUrl || '').trim(),
-      queryParams: isHttpK6 ? '[]' : buildQueryParamsJson(),
-      httpMethod: isHttpK6 ? scenarioPayload[0].method : form.httpMethod,
-      requestBody: isHttpK6 ? '' : (form.requestBody?.trim() || undefined),
-      headers: isHttpK6 ? '{}' : buildHeadersJson(),
+      queryParams: (isHttpK6 || isDb) ? '[]' : buildQueryParamsJson(),
+      httpMethod: isHttpK6 ? scenarioPayload[0].method : (isDb ? 'QUERY' : form.httpMethod),
+      requestBody: (isHttpK6 || isDb) ? '' : (form.requestBody?.trim() || undefined),
+      headers: (isHttpK6 || isDb) ? '{}' : buildHeadersJson(),
       vus: Number(form.vus),
       vuStart: Number(form.vuStart),
       duration: Number(form.duration),
@@ -2130,7 +2187,9 @@ async function onSubmit() {
         }))
         .filter((r) => r.pattern),
       httpScenario: isHttpK6 ? scenarioPayload : [],
-      browserActions: isHttpK6 ? undefined : buildBrowserActionsPayload(),
+      browserActions: form.engine === 'browser' ? buildBrowserActionsPayload() : undefined,
+      dbDriver: isDb ? (form.dbDriver || 'postgres') : undefined,
+      dbQuery: isDb ? (form.dbQuery || '').trim() : undefined,
       tags: normalizeTagList(form.tags),
     }
     if (isEdit.value) {

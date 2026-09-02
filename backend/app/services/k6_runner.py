@@ -18,8 +18,14 @@ _TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 _JINJA_ENV = Environment(loader=FileSystemLoader(_TEMPLATES_DIR), autoescape=False)
 _K6_SCRIPT_TEMPLATE = _JINJA_ENV.get_template("k6_script.tpl")
 _K6_SCENARIO_TEMPLATE = _JINJA_ENV.get_template("k6_scenario_script.tpl")
+_K6_DB_TEMPLATE = _JINJA_ENV.get_template("k6_db_script.tpl")
 
 VU_PLACEHOLDER = "{{VU}}"
+
+# engine=db: 드라이버 ID → xk6-sql JS import 경로. Dockerfile의 xk6 build --with 와 일치해야 함.
+_DB_DRIVER_IMPORTS = {
+    "postgres": "k6/x/sql/driver/postgres",
+}
 
 from app.config import INFLUXDB_URL
 from app.models.db import PerformanceTest
@@ -540,13 +546,42 @@ def _needs_per_vu(test: PerformanceTest) -> bool:
     return False
 
 
+def _resolve_db_driver(test: PerformanceTest) -> str:
+    """test.db_driver를 지원 드라이버로 정규화. 미지정/미지원이면 postgres."""
+    d = (getattr(test, "db_driver", None) or "postgres").strip().lower()
+    return d if d in _DB_DRIVER_IMPORTS else "postgres"
+
+
+def _render_db_script(test: PerformanceTest, *, options_js: str, sleep_s: float) -> str:
+    """engine=db: xk6-sql로 DSN(target_url)에 SQL(db_query)을 반복 실행하는 k6 스크립트."""
+    driver_id = _resolve_db_driver(test)
+    dsn = (getattr(test, "target_url", None) or "").strip()
+    query = (getattr(test, "db_query", None) or "").strip()
+    ctx = {
+        "options_js": options_js,
+        "sleep_s": sleep_s,
+        "dsn_js": json.dumps(dsn),
+        "query_js": json.dumps(query),
+        "driver_id_js": json.dumps(driver_id),
+        "driver_import_js": json.dumps(_DB_DRIVER_IMPORTS[driver_id]),
+    }
+    return _K6_DB_TEMPLATE.render(**ctx)
+
+
 def generate_script(
     test: PerformanceTest,
     request_header_overrides: dict[str, str] | None = None,
 ) -> str:
     """테스트 파라미터로 k6 JS 스크립트 생성. handleSummary는 stdout으로 JSON 출력."""
+    if (getattr(test, "engine", None) or "http").strip().lower() == "db":
+        rd_db = getattr(test, "request_delay", None)
+        sleep_db = float(rd_db) if rd_db is not None and float(rd_db) >= 0 else 0
+        return _render_db_script(
+            test, options_js=_build_options_js(test), sleep_s=sleep_db
+        )
     rd = getattr(test, "request_delay", None)
-    sleep_s = float(rd) if rd is not None and float(rd) >= 0 else 1
+    # request_delay 미설정 시 think-time 없음(0). 최대 처리량(TPS) 측정이 기본 목적.
+    sleep_s = float(rd) if rd is not None and float(rd) >= 0 else 0
     rules = parse_error_rules_from_test(test)
     error_rules_js = json.dumps(rules, ensure_ascii=False) if rules else None
     options_js = _build_options_js(test)
@@ -674,6 +709,31 @@ def _parse_k6_summary(data: dict) -> dict | None:
         # k6 counter: 일부 버전은 "count", 일부는 "value" 사용
         count = int(_metric_val(hr_reqs, "count") or _metric_val(hr_reqs, "value"))
         req_rate = _metric_val(hr_reqs, "rate")
+        exec_s = count / req_rate if req_rate > 0 else 0.0
+        return {
+            "avg_response_time": avg_ms,
+            "max_response_time": max_ms,
+            "failure_rate": rate,
+            "request_count": count,
+            "tps_or_rps": req_rate,
+            "execution_time": exec_s,
+        }
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
+def _parse_k6_db_summary(data: dict) -> dict | None:
+    """engine=db handleSummary JSON에서 Result 필드 추출. query_duration/query_errors + iterations 사용."""
+    try:
+        metrics = data.get("metrics") or {}
+        q_duration = metrics.get("query_duration") or {}
+        q_errors = metrics.get("query_errors") or {}
+        iters = metrics.get("iterations") or {}
+        avg_ms = _metric_val(q_duration, "avg")
+        max_ms = _metric_val(q_duration, "max")
+        rate = _metric_val(q_errors, "rate")
+        count = int(_metric_val(iters, "count") or _metric_val(iters, "value"))
+        req_rate = _metric_val(iters, "rate")
         exec_s = count / req_rate if req_rate > 0 else 0.0
         return {
             "avg_response_time": avg_ms,
@@ -837,6 +897,8 @@ def start(
     """백그라운드에서 k6 실행. 스크립트는 stdin으로 전달(k6 run -). stdout/stderr는 스레드로 읽어 로그 버퍼에 적재, 요약은 누적 stdout에서 파싱."""
     script = generate_script(test, request_header_overrides=request_header_overrides)
     script_bytes = script.encode("utf-8")
+    engine = (getattr(test, "engine", None) or "http").strip().lower()
+    summary_parser = _parse_k6_db_summary if engine == "db" else _parse_k6_summary
 
     with _processes_lock:
         if run_id in _processes:
@@ -960,7 +1022,7 @@ def start(
                 start_i = stdout_bytes.index(_SUMMARY_MARKER) + len(_SUMMARY_MARKER)
                 end_i = stdout_bytes.index(_SUMMARY_END)
                 json_str = stdout_bytes[start_i:end_i].decode("utf-8", errors="replace")
-                summary = _parse_k6_summary(json.loads(json_str))
+                summary = summary_parser(json.loads(json_str))
             except (ValueError, json.JSONDecodeError, TypeError, KeyError):
                 pass
         stderr_bytes = b"".join(stderr_accumulator)
@@ -975,9 +1037,8 @@ def start(
                 len(stdout_bytes),
                 len(stderr_bytes),
             )
-        # 저장하는 요청 수는 실제 파싱한 __REQ__ 건수로 통일 (summary와 불일치 방지)
-        if summary is not None:
-            summary = {**summary, "request_count": len(request_responses)}
+        # request_count·응답시간·TPS는 k6 요약(전체 요청 기준, 절단 없음)을 그대로 사용.
+        # 저장 __REQ__ 행은 10,000건에서 잘리므로 통계 집계에 쓰지 않는다(상세 테이블 표시용).
         with _processes_lock:
             _processes.pop(run_id, None)
         if on_complete:
